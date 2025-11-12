@@ -3,7 +3,7 @@ name: Build ExynosTools v1.3.1 (ARM64 Android)
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, v1.3.1 ]
 
 jobs:
   build:
@@ -15,38 +15,92 @@ jobs:
           echo "Runner OS: $RUNNER_OS"
           echo "Home: $HOME"
           echo "Shell: $SHELL"
+          uname -a
+          gcc --version
+          cmake --version
 
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          submodules: recursive  # If ExynosTools includes Mesa/Vulkan submodules
 
-      - name: Set up build tools
+      - name: Install build dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zstd glslang-tools
+          sudo apt install -y build-essential cmake ninja-build
+          sudo apt install -y gcc-aarch64-linux-android g++-aarch64-linux-android  # Android-targeted compilers
+          sudo apt install -y pkg-config libwayland-dev libx11-dev libxext-dev libdrm-dev
+          sudo apt install -y libexpat1-dev libzstd-dev libelf-dev libssl-dev  # Common for Vulkan/Mesa
+          sudo apt install -y glslang-tools spirv-tools  # For shader compilation
+          sudo apt install -y python3 python3-pip  # For meson if needed (fallback)
 
-      - name: Configure build (ARM64)
+      - name: Setup Android NDK (for sysroot)
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26c  # Latest stable for ARM64 Android
+          add-to-path: false
+
+      - name: Download Vulkan Headers
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git vulkan-headers
+          sudo cp -r vulkan-headers/include/vulkan /usr/local/include/
+
+      - name: Configure build (ARM64 Android)
         run: |
           mkdir build && cd build
+          export ANDROID_NDK=$ANDROID_NDK_ROOT  # From setup-ndk
+          export TOOLCHAIN=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64
+          export SYSROOT=$TOOLCHAIN/sysroot
+          export CC=$TOOLCHAIN/bin/aarch64-linux-android21-clang  # Android 21+ for Vulkan 1.3
+          export CXX=$TOOLCHAIN/bin/aarch64-linux-android21-clang++
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
+          export PKG_CONFIG_PATH=$SYSROOT/usr/lib/aarch64-linux-android/pkgconfig
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_ANDROID_API=21 \  # Min API for Vulkan
+            -DCMAKE_SYSROOT=$SYSROOT \
+            -DCMAKE_C_COMPILER=$CC \
+            -DCMAKE_CXX_COMPILER=$CXX \
+            -DCMAKE_AR=$AR \
+            -DCMAKE_STRIP=$STRIP \
+            -DCMAKE_FIND_ROOT_PATH=$SYSROOT \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
+            -DVULKAN=true \
+            -DENABLE_VULKAN=ON \  # Enable Vulkan if configurable
+            -DCMAKE_INSTALL_PREFIX=../install
 
       - name: Build
         run: |
           cd build
-          make -j$(nproc)
+          cmake --build . --parallel $(nproc) --config Release  # Use ninja implicitly via CMake
 
-      - name: Package result
+      - name: Install and Package driver
         run: |
-          mkdir -p exynostools-1.3.1-arm64/usr/lib
-          cp build/*.so exynostools-1.3.1-arm64/usr/lib/
+          cd build
+          cmake --install .  # Install to install/ prefix
+          mkdir -p exynostools-1.3.1-arm64/usr/lib64  # Android uses lib64 for ARM64
+          # Copy relevant Vulkan/Exynos .so files (adjust patterns based on your source)
+          find install -name "*.so*" -o -name "libvulkan*" -o -name "libMesa*" | xargs -I {} cp {} exynostools-1.3.1-arm64/usr/lib64/
+          # Strip for size (Android-friendly)
+          aarch64-linux-android-strip --strip-unneeded exynostools-1.3.1-arm64/usr/lib64/*.so*
           tar -cvf exynostools-1.3.1-arm64.tar exynostools-1.3.1-arm64
-          zstd exynostools-1.3.1-arm64.tar
+          zstd -19 exynostools-1.3.1-arm64.tar  # High compression
+
+      - name: Verify build
+        run: |
+          ls -la exynostools-1.3.1-arm64/usr/lib64/
+          file exynostools-1.3.1-arm64/usr/lib64/*.so*  # Confirm ARM64 Android ELF
+          echo "Build successful if .so files are ARM64 shared objects"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: exynostools
+          name: exynostools-1.3.1-arm64-driver
+          path: exynostools-1.3.1-arm64.tar.zst
+          retention-days: 30
