@@ -18,7 +18,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y cmake ninja-build meson zstd python3-pip
+          sudo apt-get install -y cmake ninja-build meson zstd python3-pip unzip
           pip3 install meson ninja
 
       - name: Setup Android NDK r25b
@@ -30,9 +30,9 @@ jobs:
       - name: Export NDK path
         run: echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Install glslc from Shaderc
+      - name: Install glslc from Shaderc v2023.3
         run: |
-          wget https://github.com/google/shaderc/releases/download/v2023.1/glslc-linux-x86_64.zip
+          wget https://github.com/google/shaderc/releases/download/v2023.3/glslc-linux-x86_64.zip
           unzip glslc-linux-x86_64.zip -d glslc-bin
           echo "${PWD}/glslc-bin" >> $GITHUB_PATH
           echo "GLSLC_EXECUTABLE=${PWD}/glslc-bin/glslc" >> $GITHUB_ENV
