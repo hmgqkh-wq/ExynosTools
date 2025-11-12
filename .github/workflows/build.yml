@@ -18,7 +18,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y cmake ninja-build meson zstd python3-pip
+          sudo apt-get install -y cmake ninja-build meson zstd python3-pip glslang-tools
           pip3 install meson ninja
 
       - name: Setup Android NDK r25b
