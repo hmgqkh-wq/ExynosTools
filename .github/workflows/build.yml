@@ -1,82 +1,32 @@
-name: build-android-arm64
+name: Build Exynos Tools for Winlator
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+on: [push, pull_request]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install base deps
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y cmake ninja-build meson zstd python3-pip unzip
-          pip3 install --upgrade pip
-          pip3 install meson ninja
-
-      - name: Install glslc (Ubuntu shaderc-tools)
-        run: |
-          sudo apt-get install -y shaderc shaderc-tools
-          which glslc || { echo "glslc not found after install"; exit 1; }
-          glslc --version
-
-      - name: Setup Android NDK r25b
-        id: setup-ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r25b
-
-      - name: Export NDK path
-        run: echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-
-      - name: Configure (CMake Android arm64)
-        run: |
-          cmake -S . -B build-android -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=31 \
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build (CMake)
-        run: cmake --build build-android --config Release -j
-
-      - name: Install to staging
-        run: cmake --install build-android --prefix "$(pwd)/staging"
-
-      - name: Verify size
-        run: |
-          ls -lh staging/usr/lib/ || true
-          sofile=staging/usr/lib/libxeno_wrapper.so
-          if [ ! -f "$sofile" ]; then echo "Missing libxeno_wrapper.so"; exit 1; fi
-          size=$(stat -c%s "$sofile")
-          echo "Size: $size bytes"
-          if [ "$size" -lt 80000 ]; then echo "Shared object too small (<80KB)"; exit 1; fi
-
-      - name: Prepare package layout
-        run: |
-          mkdir -p pkg/usr/lib pkg/usr/share pkg/etc/exynostools pkg/profiles/winlator pkg/assets/shaders/decode
-          cp -v staging/usr/lib/libxeno_wrapper.so pkg/usr/lib/
-          # Adjust these paths if your repo uses different locations:
-          cp -v usr/share/meta.json pkg/usr/share/ || true
-          cp -v etc/exynostools/performance_mode.conf pkg/etc/exynostools/ || true
-          cp -v profiles/winlator/*.env pkg/profiles/winlator/ || true
-          cp -v assets/shaders/decode/*.spv pkg/assets/shaders/decode/ || true
-
-      - name: Create tar.zst
-        run: |
-          tar --zstd -cvf exynostools-android-arm64.tar.zst -C pkg .
-          echo "Created exynostools-android-arm64.tar.zst"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: exynostools-android-arm64
-          path: exynostools-android-arm64.tar.zst
+    - uses: actions/checkout@v3
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake tar zstd curl
+        
+    - name: Setup Android NDK r25b
+      run: |
+        wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+        unzip android-ndk-r25b-linux.zip
+        echo "ANDROID_NDK_HOME=$PWD/android-ndk-r25b" >> $GITHUB_ENV
+        echo "$PWD/android-ndk-r25b" >> $GITHUB_PATH
+        
+    - name: Build and package
+      run: |
+        bash scripts/build_and_package.sh
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: exynostools-android-arm64
+        path: artifacts/exynostools-android-arm64.tar.zst
