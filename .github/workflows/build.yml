@@ -30,9 +30,9 @@ jobs:
       - name: Export NDK path
         run: echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Install glslc from Shaderc v2023.3
+      - name: Install glslc from Shaderc v2023.2
         run: |
-          wget https://github.com/google/shaderc/releases/download/v2023.3/glslc-linux-x86_64.zip
+          wget https://github.com/google/shaderc/releases/download/v2023.2/glslc-linux-x86_64.zip
           unzip glslc-linux-x86_64.zip -d glslc-bin
           echo "${PWD}/glslc-bin" >> $GITHUB_PATH
           echo "GLSLC_EXECUTABLE=${PWD}/glslc-bin/glslc" >> $GITHUB_ENV
