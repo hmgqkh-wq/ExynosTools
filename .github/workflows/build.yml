@@ -19,7 +19,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build pkg-config \
-            python3 python3-mako flex bison git zip unzip curl
+            python3 python3-mako flex bison git zip unzip curl wget
+
+      - name: Install Vulkan SDK tools (for glslc)
+        run: |
+          wget -q https://sdk.lunarg.com/sdk/download/1.3.280.0/linux/vulkan-sdk.tar.gz
+          tar -xzf vulkan-sdk.tar.gz
+          export VULKAN_SDK=$PWD/1.3.280.0/x86_64
+          echo "VULKAN_SDK=$VULKAN_SDK" >> $GITHUB_ENV
+          echo "$VULKAN_SDK/bin" >> $GITHUB_PATH
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -27,7 +35,7 @@ jobs:
         with:
           ndk-version: r26c
 
-      - name: Configure CMake (Android ARM64)
+      - name: Configure (Android ARM64)
         run: |
           export ANDROID_NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
           export TOOLCHAIN=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64
@@ -37,6 +45,11 @@ jobs:
           export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
           export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
           export AR=$TOOLCHAIN/bin/llvm-ar
+          export PATH="$VULKAN_SDK/bin:$PATH"
+
+          echo "Checking for glslc:"
+          which glslc || (echo "glslc not found!" && exit 1)
+          glslc --version || true
 
           mkdir -p build && cd build
 
@@ -64,17 +77,4 @@ jobs:
           TOOLCHAIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64"
           $TOOLCHAIN/bin/aarch64-linux-android24-strip --strip-unneeded exynostools-1.3.1-arm64/usr/lib64/*.so* || true
 
-          tar -czf exynostools-1.3.1-arm64.tar.gz exynostools-1.3.1-arm64
-
-      - name: Verify build
-        run: |
-          cd build
-          echo "=== Built files ==="
-          find exynostools-1.3.1-arm64/usr/lib64 -type f
-          file exynostools-1.3.1-arm64/usr/lib64/*.so* || echo "⚠️ No shared objects found!"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: exynostools-1.3.1-arm64
-          path: build/exynostools-1.3.1-arm64.tar.gz
+          tar -czf exynostools-1.3
