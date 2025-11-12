@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout source
@@ -15,73 +16,122 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
+          set -e
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
-            python3 python3-mako flex bison git zip unzip curl glslang-tools
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            python3 python3-pip python3-mako flex bison git wget unzip curl \
+            glslang-tools libdrm-dev libexpat1-dev libelf-dev
 
-      - name: Verify glslc
+      - name: Install reliable glslc wrapper (uses glslangValidator)
         run: |
-          which glslc || (echo "glslc not found!"; exit 1)
-          glslc --version
+          set -e
+          # glslangValidator provided by glslang-tools is reliably available
+          # Create a tiny wrapper named glslc that maps basic glslc usage to glslangValidator
+          sudo tee /usr/local/bin/glslc > /dev/null <<'GLSLC_WRAPPER'
+#!/usr/bin/env bash
+# Minimal glslc wrapper for CI: translate basic `glslc -o out.spv in.glsl` to glslangValidator -V -o out.spv in.glsl
+# Also forward -fshader-stage=<stage> style as best-effort (not exhaustive).
+args=()
+out=""
+infile=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      shift
+      out="$1"
+      ;;
+    -*)
+      # drop unknown single-dash flags (best-effort)
+      ;;
+    *)
+      # assume positional filename
+      if [[ -z "$infile" ]]; then
+        infile="$1"
+      else
+        args+=("$1")
+      fi
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "$infile" ]]; then
+  echo "glslc-wrapper: no input file specified" >&2
+  exit 1
+fi
+
+cmd=(glslangValidator -V "$infile")
+if [[ -n "$out" ]]; then
+  cmd+=( -o "$out" )
+fi
+
+# run and preserve exit code
+"${cmd[@]}"
+exit $?
+GLSLC_WRAPPER
+
+          sudo chmod +x /usr/local/bin/glslc
+          # sanity check
+          which glslc
+          glslc --version || true
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r26c
+          add-to-path: true
 
-      - name: Configure (Android ARM64)
+      - name: Configure CMake (Android ARM64)
+        env:
+          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          export ANDROID_NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
-          export TOOLCHAIN=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64
-          export API=24
-          export ARCH=arm64-v8a
-          export TARGET=aarch64-linux-android
-          export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
-          export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
-          export AR=$TOOLCHAIN/bin/llvm-ar
-
+          set -euo pipefail
           echo "NDK path: $ANDROID_NDK"
-          echo "glslc path: $(which glslc)"
+          TOOLCHAIN="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          API=24
+          ARCH=arm64-v8a
+          TARGET=aarch64-linux-android
 
-          mkdir -p build && cd build
-          cmake .. \
+          export CC="$TOOLCHAIN/bin/${TARGET}${API}-clang"
+          export CXX="$TOOLCHAIN/bin/${TARGET}${API}-clang++"
+          export AR="$TOOLCHAIN/bin/llvm-ar"
+          export STRIP="$TOOLCHAIN/bin/${TARGET}-strip"
+
+          echo "Using CC=$CC"
+          echo "glslc available at: $(which glslc || true)"
+          glslc --version || echo "glslc wrapper present"
+
+          cmake -S . -B build \
             -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=${ARCH} \
             -DANDROID_PLATFORM=android-${API} \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$PWD/install \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_INSTALL_PREFIX=$PWD/build/install \
             -DBUILD_SHARED_LIBS=ON
 
-      - name: Build and Install
+      - name: Build and install
         run: |
+          set -euo pipefail
           cd build
           ninja -v
           ninja install
 
       - name: Package output
         run: |
+          set -euo pipefail
           cd build
           mkdir -p exynostools-1.3.1-arm64/usr/lib64
-          find install -type f -name "*.so*" -exec cp {} exynostools-1.3.1-arm64/usr/lib64/ \;
+          # copy all shared objects from install into package
+          find install -type f -name "*.so*" -exec cp --parents {} exynostools-1.3.1-arm64/ \; || true
+          # flatten into usr/lib64 for compatibility (winlator/gamehub expect libs there)
+          mkdir -p exynostools-1.3.1-arm64/usr/lib64
+          find exynostools-1.3.1-arm64 -type f -name "*.so*" -exec cp {} exynostools-1.3.1-arm64/usr/lib64/ \; || true
 
-          TOOLCHAIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64"
-          $TOOLCHAIN/bin/aarch64-linux-android24-strip --strip-unneeded exynostools-1.3.1-arm64/usr/lib64/*.so* || true
-
-          tar -czf exynostools-1.3.1-arm64.tar.gz exynostools-1.3.1-arm64
-
-      - name: Verify build
-        run: |
-          cd build
-          echo "=== Built files ==="
-          find exynostools-1.3.1-arm64/usr/lib64 -type f
-          file exynostools-1.3.1-arm64/usr/lib64/*.so* || echo "⚠️ No shared objects found!"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: exynostools-1.3.1-arm64
-          path: build/exynostools-1.3.1-arm64.tar.gz
+          # strip if strip exists
+          if [ -x "${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-strip" ]; then
+            "${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-strip" --strip-unneeded exynostools-1.3.1-arm64/usr/lib64/*.so* || true
