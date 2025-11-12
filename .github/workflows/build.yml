@@ -21,6 +21,11 @@ jobs:
           sudo apt-get install -y cmake ninja-build meson zstd python3-pip glslang-tools
           pip3 install meson ninja
 
+      - name: Verify glslc is installed
+        run: |
+          which glslc || { echo "glslc not found"; exit 1; }
+          glslc --version || { echo "glslc failed to run"; exit 1; }
+
       - name: Setup Android NDK r25b
         id: setup-ndk
         uses: nttld/setup-ndk@v1
