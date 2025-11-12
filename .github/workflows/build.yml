@@ -30,18 +30,13 @@ jobs:
       - name: Export NDK path
         run: echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Verify NDK glslc and add to PATH
+      - name: Install glslc from Shaderc
         run: |
-          GLSLC="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/glslc"
-          echo "GLSLC=${GLSLC}" >> $GITHUB_ENV
-          if [ ! -x "$GLSLC" ]; then
-            echo "NDK glslc not found at: $GLSLC"
-            ls -la "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin" || true
-            exit 1
-          fi
-          echo "NDK glslc found: $GLSLC"
-          echo "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
-          which glslc && glslc --version
+          wget https://github.com/google/shaderc/releases/download/v2023.1/glslc-linux-x86_64.zip
+          unzip glslc-linux-x86_64.zip -d glslc-bin
+          echo "${PWD}/glslc-bin" >> $GITHUB_PATH
+          echo "GLSLC_EXECUTABLE=${PWD}/glslc-bin/glslc" >> $GITHUB_ENV
+          glslc --version
 
       - name: Configure (CMake Android arm64)
         run: |
@@ -50,7 +45,7 @@ jobs:
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=31 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DGLSLC_EXECUTABLE="${GLSLC}"
+            -DGLSLC_EXECUTABLE="${GLSLC_EXECUTABLE}"
 
       - name: Build (CMake)
         run: cmake --build build-android --config Release -j
