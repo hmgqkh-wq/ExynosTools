@@ -4,10 +4,10 @@ on: [push, pull_request]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Install dependencies
       run: |
@@ -16,8 +16,8 @@ jobs:
         
     - name: Setup Android NDK r25b
       run: |
-        wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-        unzip android-ndk-r25b-linux.zip
+        wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+        unzip -q android-ndk-r25b-linux.zip
         echo "ANDROID_NDK_HOME=$PWD/android-ndk-r25b" >> $GITHUB_ENV
         echo "$PWD/android-ndk-r25b" >> $GITHUB_PATH
         
@@ -26,7 +26,8 @@ jobs:
         bash scripts/build_and_package.sh
         
     - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: exynostools-android-arm64
-        path: artifacts/exynostools-android-arm64.tar.zst
+        path: artifacts/
+        retention-days: 30
