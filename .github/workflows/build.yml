@@ -16,10 +16,7 @@ jobs:
       - name: Set up build tools
         run: |
           sudo apt update
-          sudo apt install -y build-essential cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu unzip wget zstd
-          wget https://github.com/google/shaderc/releases/download/v2023.2/glslc-linux-x86_64.zip
-          unzip glslc-linux-x86_64.zip
-          sudo mv glslc /usr/bin/
+          sudo apt install -y build-essential cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zstd glslang-tools
 
       - name: Configure build (ARM64)
         run: |
