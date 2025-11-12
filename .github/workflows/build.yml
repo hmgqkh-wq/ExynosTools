@@ -17,7 +17,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y build-essential cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu unzip wget zstd
-          wget https://github.com/google/shaderc/releases/download/v2023.3/glslc-linux-x86_64.zip
+          wget https://github.com/google/shaderc/releases/download/v2023.2/glslc-linux-x86_64.zip
           unzip glslc-linux-x86_64.zip
           sudo mv glslc /usr/bin/
 
