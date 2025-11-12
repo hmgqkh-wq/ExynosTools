@@ -1,7 +1,9 @@
-name: Build ExynosTools Driver
+name: Build ExynosTools v1.3.1 (ARM64 Android)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
   build:
@@ -9,31 +11,40 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Install build tools
+      - name: Set up build tools
         run: |
           sudo apt update
-          sudo apt install -y build-essential meson ninja-build zstd cmake unzip wget
+          sudo apt install -y build-essential cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu unzip wget zstd
           wget https://github.com/google/shaderc/releases/download/v2023.3/glslc-linux-x86_64.zip
           unzip glslc-linux-x86_64.zip
           sudo mv glslc /usr/bin/
 
-      - name: Configure build
-        run: meson setup builddir --prefix=/usr
-
-      - name: Compile driver
-        run: ninja -C builddir
-
-      - name: Package for emulator
+      - name: Configure build (ARM64)
         run: |
-          mkdir -p exynostools-android-arm64/usr/lib
-          cp builddir/*.so exynostools-android-arm64/usr/lib/
-          tar -cvf exynostools-android-arm64.tar exynostools-android-arm64
-          zstd exynostools-android-arm64.tar
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
 
-      - name: Upload driver archive
-        uses: actions/upload-artifact@v3
+      - name: Build
+        run: |
+          cd build
+          make -j$(nproc)
+
+      - name: Package result
+        run: |
+          mkdir -p exynostools-1.3.1-arm64/usr/lib
+          cp build/*.so exynostools-1.3.1-arm64/usr/lib/
+          tar -cvf exynostools-1.3.1-arm64.tar exynostools-1.3.1-arm64
+          zstd exynostools-1.3.1-arm64.tar
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: exynostools-driver
-          path: exynostools-android-arm64.tar.zst
+          name: exynostools-arm64
+          path: exynostools-1.3.1-arm64.tar.zst
