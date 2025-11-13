@@ -32,13 +32,13 @@ jobs:
           ndk-version: r25b
 
       - name: Configure (CMake Android arm64)
-        run: cmake -S . -B build-android -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=31 -DCMAKE_BUILD_TYPE=Release -DANDROID_STL=c++_shared || echo "CMake configure failed with exit code $?"
+        run: cmake -S . -B build-android -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=31 -DCMAKE_BUILD_TYPE=Release -DANDROID_STL=c++_shared
 
       - name: Build (CMake)
-        run: cmake --build build-android --config Release -j || echo "CMake build failed with exit code $?"
+        run: cmake --build build-android --config Release -j  # Removed || echo to show errors
 
       - name: Install to staging
-        run: cmake --install build-android --prefix $(pwd)/staging || echo "CMake install failed with exit code $?"
+        run: cmake --install build-android --prefix $(pwd)/staging  # Removed || echo to show errors
 
       - name: Verify size
         run: |
@@ -56,12 +56,12 @@ jobs:
           cp -v usr/share/meta.json pkg/usr/share/ || echo "meta.json copy failed"
           cp -v etc/exynostools/performance_mode.conf pkg/etc/exynostools/ || echo "conf copy failed"
           cp -v profiles/winlator/*.env pkg/profiles/winlator/ || echo "env copy failed"
-          # Copy generated SPIR-V if exists (from build/shaders to decode/)
+          # Copy generated SPIR-V if exists
           if [ -d build-android/shaders ]; then cp -v build-android/shaders/*.spv pkg/assets/shaders/decode/ || echo "No SPIR-V files to copy"; fi
 
       - name: Create tar.zst
         run: |
-          tar --zstd -cvf exynostools-android-arm64.tar.zst -C pkg . || echo "tar failed"
+          tar --zstd -cvf exynostools-android-arm64.tar.zst -C pkg .
           echo "Created exynostools-android-arm64.tar.zst"
 
       - name: Upload artifact
