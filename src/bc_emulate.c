@@ -366,4 +366,5 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
     vkDestroyImageView(ctx->device, imageView, NULL);
     
     XENO_LOGD("bc_emulate: decoded %dx%d texture using format %d", extent.width, extent.height, format);
-    return
+    return VK_SUCCESS;
+}
