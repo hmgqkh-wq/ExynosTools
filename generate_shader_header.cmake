@@ -19,7 +19,7 @@ file(TO_CMAKE_PATH "${HEADER_FILE}" __hdr_out)
 # If SPIRV_FILE is sentinel or missing, emit a safe fallback header
 if("${SPIRV_FILE}" STREQUAL "__MISSING__" OR NOT EXISTS "${__spv_in}")
   message(STATUS "generate_shader_header: SPIR-V missing, producing fallback header ${__hdr_out}")
-  file(WRITE "${__hdr_out}" "#pragma once\n#include <stdint.h>\n/* fallback shader data: 1 zero-word */\nstatic const uint32_t ${VAR_NAME}[] = { 0x00000000 };\nstatic const unsigned int ${VAR_NAME}_len = 4;\n")
+  file(WRITE "${__hdr_out}" "#pragma once\n#include <stdint.h>\n/* fallback shader data: single zero word */\nstatic const uint32_t ${VAR_NAME}[] = { 0x00000000 };\nstatic const unsigned int ${VAR_NAME}_len = 4;\n")
   return()
 endif()
 
@@ -30,6 +30,7 @@ string(LENGTH "${_BIN_DATA}" _len_bytes)
 math(EXPR _num_words "(${_len_bytes} + 3) / 4")
 
 set(_words "")
+# Convert each 4-byte chunk into a 32-bit word and format as 8-digit hex
 foreach(i RANGE 0 ${_num_words} 1)
   math(EXPR off "${i} * 4")
   set(_w 0)
@@ -39,13 +40,17 @@ foreach(i RANGE 0 ${_num_words} 1)
       break()
     endif()
     string(SUBSTRING "${_BIN_DATA}" ${idx} 1 _byte)
-    # Convert single character to its numeric byte value using /bin/printf (portable on CI)
+    # byte numeric value
     execute_process(COMMAND /bin/printf "%d" "'${_byte}"
       OUTPUT_VARIABLE _bval
       OUTPUT_STRIP_TRAILING_WHITESPACE)
     math(EXPR _w "${_w} + (${_bval} << (${b} * 8))")
   endforeach()
-  string(APPEND _words "0x${_w}, ")
+  # Format the 32-bit word as 8-digit lowercase hex (portable on CI)
+  execute_process(COMMAND /bin/printf "%08x" "${_w}"
+    OUTPUT_VARIABLE _hex
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  string(APPEND _words "0x${_hex}, ")
 endforeach()
 
 # Write header: uint32_t array and length in bytes
