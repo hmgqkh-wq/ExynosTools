@@ -1,6 +1,6 @@
 # generate_shader_header.cmake
 # Robust SPIR-V binary -> uint32_t[] C header generator.
-# If SPIRV_FILE equals "__MISSING__" or file not present, a safe empty header is emitted.
+# If SPIRV_FILE equals "__MISSING__" or file not present, a safe fallback header is emitted.
 # Expects SPIRV_FILE, HEADER_FILE, VAR_NAME on the command line via -D
 
 if(NOT DEFINED SPIRV_FILE)
@@ -16,10 +16,10 @@ endif()
 file(TO_CMAKE_PATH "${SPIRV_FILE}" __spv_in)
 file(TO_CMAKE_PATH "${HEADER_FILE}" __hdr_out)
 
-# If SPIRV_FILE is explicitly the sentinel value, emit an empty safe header
+# If SPIRV_FILE is sentinel or missing, emit a safe fallback header
 if("${SPIRV_FILE}" STREQUAL "__MISSING__" OR NOT EXISTS "${__spv_in}")
   message(STATUS "generate_shader_header: SPIR-V missing, producing fallback header ${__hdr_out}")
-  file(WRITE "${__hdr_out}" "#pragma once\n#include <stdint.h>\nstatic const uint32_t ${VAR_NAME}[] = { 0x00000000 }; \nstatic const unsigned int ${VAR_NAME}_len = 4; \n")
+  file(WRITE "${__hdr_out}" "#pragma once\n#include <stdint.h>\n/* fallback shader data: 1 zero-word */\nstatic const uint32_t ${VAR_NAME}[] = { 0x00000000 };\nstatic const unsigned int ${VAR_NAME}_len = 4;\n")
   return()
 endif()
 
