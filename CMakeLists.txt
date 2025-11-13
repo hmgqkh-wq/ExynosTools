@@ -9,7 +9,6 @@ option(XCLIPSE_ENABLE_ANDROID_LOG "Enable Android logging" OFF)
 
 # Find required tools for shader compilation
 find_program(GLSLC_EXECUTABLE glslc REQUIRED)
-find_program(XXD_EXECUTABLE xxd REQUIRED)
 
 # Shader compilation function
 function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
@@ -27,16 +26,22 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
         COMMENT "Compiling ${SHADER_SOURCE} to SPIR-V"
     )
     
-    # Convert SPIR-V to C header
+    # Generate C header from SPIR-V using CMake script
     add_custom_command(
         OUTPUT ${HEADER_OUTPUT}
-        COMMAND ${XXD_EXECUTABLE} -i ${SPIRV_OUTPUT} > ${HEADER_OUTPUT}
-        COMMAND sed -i "s/unsigned char/static const unsigned char/g" ${HEADER_OUTPUT}
-        COMMAND sed -i "s/${SHADER_NAME}_spv/${VARIABLE_NAME}/g" ${HEADER_OUTPUT}
+        COMMAND ${CMAKE_COMMAND} -D SPIRV_FILE=${SPIRV_OUTPUT} -D HEADER_FILE=${HEADER_OUTPUT} -D VAR_NAME=${VARIABLE_NAME} -P ${CMAKE_CURRENT_SOURCE_DIR}/generate_shader_header.cmake
         DEPENDS ${SPIRV_OUTPUT}
-        COMMENT "Converting ${SPIRV_OUTPUT} to C header"
+        COMMENT "Generating C header from ${SPIRV_OUTPUT}"
     )
 endfunction()
+
+# Create the generate_shader_header.cmake script
+file(WRITE ${CMAKE_CURRENT_SOURCE_DIR}/generate_shader_header.cmake "
+file(READ \${SPIRV_FILE} SPIRV_HEX HEX)
+string(REGEX REPLACE \"(..)\" \"0x\\\\1, \" SPIRV_ARRAY \${SPIRV_HEX})
+file(WRITE \${HEADER_FILE} \"static const unsigned char \${VAR_NAME}[] = { \${SPIRV_ARRAY} };\\n\")
+file(APPEND \${HEADER_FILE} \"static const unsigned int \${VAR_NAME}_len = sizeof(\${VAR_NAME});\\n\")
+")
 
 # Compile shaders to headers
 set(SHADER_HEADERS_DIR "${CMAKE_BINARY_DIR}/generated/shaders")
@@ -71,7 +76,7 @@ target_compile_definitions(xeno_wrapper PRIVATE $<$<BOOL:${XCLIPSE_ENABLE_ANDROI
 
 find_package(Threads REQUIRED)
 if(UNIX)
-    target_link_libraries(xeno_wrapper PRIVATE dl Threads::Threads)
+    target_link_libraries(xeno_wrapper PRIVATE dl Threads::Threads vulkan)
 endif()
 
 # Add include directory for generated shader headers
