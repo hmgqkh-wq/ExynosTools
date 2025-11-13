@@ -27,7 +27,7 @@ endif()
 set(SHADER_HEADERS_DIR "${CMAKE_BINARY_DIR}/generated/shaders")
 file(MAKE_DIRECTORY ${SHADER_HEADERS_DIR})
 
-# Helper: compile shader -> SPIR-V -> C header, or emit fallback header
+# Helper: compile shader -> SPIRV -> C header, or emit fallback header
 function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
   set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
@@ -77,12 +77,13 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   endif()
 endfunction()
 
-# List of BC shaders referenced by sources
+# List of BC shaders referenced by sources (add new names here if more headers are included)
 set(BC_SHADERS
   bc1
   bc3
   bc4
   bc5
+  bc6h
 )
 
 # Request generate commands for each BC shader and collect header output paths
@@ -95,17 +96,16 @@ foreach(s IN LISTS BC_SHADERS)
   list(APPEND GENERATED_HEADERS "${HDR}")
 endforeach()
 
-# Add an explicit custom target that depends on all generated headers and mark it as byproducts of the build.
+# Add an explicit custom target that depends on all generated headers and make it part of the build.
 add_custom_target(generated_shaders ALL DEPENDS ${GENERATED_HEADERS})
 set_target_properties(generated_shaders PROPERTIES
   EXCLUDE_FROM_ALL FALSE
 )
 
-# Make generated headers visible globally early (so includes in any TU find them).
+# Make generated headers visible globally early so the compiler can find includes during parallel builds.
 include_directories(${SHADER_HEADERS_DIR})
-# Also add to target later; global include ensures early compile-phase find.
 
-# Explicit source list (avoid globbing surprises)
+# Explicit source list to avoid globbing surprises
 set(SRC_FILES
   src/xeno_wrapper.c
   src/bc_emulate.c
@@ -117,7 +117,7 @@ set(SRC_FILES
   src/hud.c
 )
 
-# Create the library target and explicitly list the generated headers as sources so build systems track them.
+# Create the library target and include generated headers so CMake tracks them.
 add_library(xeno_wrapper SHARED
   ${SRC_FILES}
   ${GENERATED_HEADERS}
