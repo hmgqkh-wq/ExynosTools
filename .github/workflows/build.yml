@@ -16,7 +16,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake ninja-build meson zstd python3-pip make vim
+          sudo apt-get install -y build-essential cmake ninja-build meson zstd python3-pip make vim-common
 
       - name: Install Vulkan SDK (for glslc)
         run: |
@@ -29,11 +29,6 @@ jobs:
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25b
-
-      - name: Patch CMakeLists.txt for xxd path and Vulkan link
-        run: |
-          sed -i 's/COMMAND ${XXD_EXECUTABLE} -i ${SPIRV_OUTPUT} > ${HEADER_OUTPUT}/COMMAND cd ${CMAKE_BINARY_DIR}\/shaders \&\& ${XXD_EXECUTABLE} -i ${SHADER_NAME}.spv > ${HEADER_OUTPUT}/g' CMakeLists.txt
-          echo "target_link_libraries(xeno_wrapper PRIVATE -lvulkan)" >> CMakeLists.txt
 
       - name: Configure (CMake Android arm64)
         run: cmake -S . -B build-android -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=31 -DCMAKE_BUILD_TYPE=Release -DANDROID_STL=c++_shared -DCMAKE_C_FLAGS="-I$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" -DCMAKE_VERBOSE_MAKEFILE=ON
