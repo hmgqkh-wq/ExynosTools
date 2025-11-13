@@ -8,7 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(XCLIPSE_ENABLE_ANDROID_LOG "Enable Android logging" OFF)
 option(BUILD_WITH_THREAD_SANITIZER "Build with thread sanitizer (for debugging only)" OFF)
 
-# Prefer glslc if available, but do not hard-fail the configure step if it's missing.
+# Prefer glslc if available, but do not hard-fail configure when missing.
 find_program(GLSLC_EXECUTABLE glslc)
 if(NOT GLSLC_EXECUTABLE)
   message(STATUS "glslc not found in PATH; shader compilation will be skipped and fallback headers generated")
@@ -16,14 +16,13 @@ else()
   message(STATUS "Found glslc: ${GLSLC_EXECUTABLE}")
 endif()
 
-# Shader header generator script (always present)
+# Generator script path
 set(GEN_HEADER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/generate_shader_header.cmake")
 if(NOT EXISTS "${GEN_HEADER_SCRIPT}")
   message(FATAL_ERROR "Missing required file: ${GEN_HEADER_SCRIPT}")
 endif()
 
-# Helper function: compile a GLSL shader to SPIR-V and then to a C header.
-# If glslc is not found or shader source missing, a fallback header (empty array) will be generated.
+# Helper: compile shader -> SPIRV -> C header, or emit fallback header
 function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
   set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
@@ -31,7 +30,6 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated/shaders")
 
   if(EXISTS "${SHADER_SOURCE}" AND GLSLC_EXECUTABLE)
-    # Normal flow: compile shader to SPIR-V, then run generator to produce header.
     add_custom_command(
       OUTPUT ${SPIRV_OUTPUT}
       COMMAND ${GLSLC_EXECUTABLE} -I${CMAKE_SOURCE_DIR}/assets/shaders/src ${SHADER_SOURCE} -o ${SPIRV_OUTPUT}
@@ -48,7 +46,7 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
       VERBATIM
     )
   else()
-    # Fallback: generate a harmless empty uint32_t array header so build continues.
+    # Fallback: generator will produce a safe placeholder header
     add_custom_command(
       OUTPUT ${HEADER_OUTPUT}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated/shaders
@@ -60,11 +58,17 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   endif()
 endfunction()
 
-# Where generated headers will go
+# Where headers go
 set(SHADER_HEADERS_DIR "${CMAKE_BINARY_DIR}/generated/shaders")
 file(MAKE_DIRECTORY ${SHADER_HEADERS_DIR})
 
-# Declare shader conversions (these produce headers as outputs)
+# Generate headers for all BC shaders used by sources: bc1, bc4, bc5
+compile_shader_to_header(
+  "${CMAKE_SOURCE_DIR}/assets/shaders/src/bc1.comp"
+  "${SHADER_HEADERS_DIR}/bc1_shader.h"
+  "bc1_shader_spv"
+)
+
 compile_shader_to_header(
   "${CMAKE_SOURCE_DIR}/assets/shaders/src/bc4.comp"
   "${SHADER_HEADERS_DIR}/bc4_shader.h"
@@ -77,13 +81,14 @@ compile_shader_to_header(
   "bc5_shader_spv"
 )
 
-# Ensure headers are built before the library by introducing an explicit target
+# Ensure headers are produced before building library
 add_custom_target(generated_shaders DEPENDS
+  ${SHADER_HEADERS_DIR}/bc1_shader.h
   ${SHADER_HEADERS_DIR}/bc4_shader.h
   ${SHADER_HEADERS_DIR}/bc5_shader.h
 )
 
-# Collect sources explicitly to avoid missing files causing glob surprises
+# Explicit source list to avoid accidental missing files
 set(SRC_FILES
   src/xeno_wrapper.c
   src/bc_emulate.c
@@ -97,6 +102,7 @@ set(SRC_FILES
 
 add_library(xeno_wrapper SHARED
   ${SRC_FILES}
+  ${SHADER_HEADERS_DIR}/bc1_shader.h
   ${SHADER_HEADERS_DIR}/bc4_shader.h
   ${SHADER_HEADERS_DIR}/bc5_shader.h
 )
