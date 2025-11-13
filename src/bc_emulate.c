@@ -3,6 +3,7 @@
 #include "bc4_shader.h"
 #include "bc5_shader.h"
 #include <string.h>
+#include <vulkan/vulkan.h>  // Added this include for Vulkan types and functions
 
 static VkResult create_shader_module(VkDevice device, const unsigned char* code, 
                                    unsigned int code_len, VkShaderModule* module) {
@@ -367,4 +368,3 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
     XENO_LOGD("bc_emulate: decoded %dx%d texture using format %d", extent.width, extent.height, format);
     return VK_SUCCESS;
 }
-
