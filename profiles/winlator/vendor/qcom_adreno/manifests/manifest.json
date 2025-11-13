@@ -1,0 +1,9 @@
+{
+  "vendor": "Qualcomm",
+  "driver": "Adreno-Compat-Wrapper",
+  "version": "1.0.0",
+  "gpu": "Xclipse-940 (wrapped as Adreno)",
+  "vendor_id": 0x5143,
+  "supported_api": ["Vulkan1.3", "VK_KHR_swapchain", "VK_EXT_descriptor_indexing", "VK_EXT_subgroup_size_control"],
+  "notes": "Compatibility wrapper that proxies to stock Xclipse driver and applies conservative limit promotions + pipeline caching for Winlator"
+}
