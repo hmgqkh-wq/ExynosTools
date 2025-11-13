@@ -26,7 +26,7 @@ jobs:
           sudo apt update
           sudo apt install -y vulkan-sdk
 
-      - name: Setup Android NDK r27  # Upgraded for better Clang/asm support
+      - name: Setup Android NDK r27
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27
@@ -39,9 +39,10 @@ jobs:
             -DANDROID_PLATFORM=31 \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS="-fno-integrated-as -Xclang -no-integrated-as" \
-            -DCMAKE_CXX_FLAGS="-fno-integrated-as -Xclang -no-integrated-as -std=c++17" \
+            # Removed -std=c++17 from C_FLAGS
+            -DCMAKE_CXX_FLAGS="-std=c++17"  # Move to CXX_FLAGS (though not needed unless C++ files are added)
             -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
-            -DANDROID_STL=c++_shared  # Ensure STL for any intrinsics
+            -DANDROID_STL=c++_shared
         env:
           CC: $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang
           CXX: $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang++
