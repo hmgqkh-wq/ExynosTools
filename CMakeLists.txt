@@ -16,7 +16,6 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Ensure we produce position independent executables / PIC where needed
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Compiler settings
@@ -38,7 +37,7 @@ add_compile_definitions(
   XCLIPSE_940_OPTIMIZE=${XCLIPSE_940_OPTIMIZE}
 )
 
-# Source directories
+# Directories
 set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
 set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
 set(GENERATED_SPV_DIR "${CMAKE_BINARY_DIR}/generated_spv") # matches build/generated_spv seen in CI
@@ -50,21 +49,21 @@ include_directories(
   "${GENERATED_SPV_DIR}"
 )
 
-# List of source files. Add or remove entries to match your repo layout.
+# List of source files. Edit to match your repo layout if needed.
 set(PROJECT_SOURCES
   ${SRC_DIR}/main.c
   ${SRC_DIR}/logging.c
-  ${SRC_DIR}/xeno_log_stream.c        # <- newly added so xeno_log_stream symbol is compiled
+  ${SRC_DIR}/xeno_log_stream.c
   ${SRC_DIR}/bc_emulate.c
   ${SRC_DIR}/emulate.c
   ${SRC_DIR}/create_common_layouts_and_pipelines.c
   ${SRC_DIR}/drivers/xclipse/async.c
   ${SRC_DIR}/app_profile.c
   ${SRC_DIR}/detect.c
-  # add any other sources your project requires here
+  # add other sources here as required
 )
 
-# Ensure we only add files that actually exist to avoid configure-time errors on partial checkouts
+# Only add sources that exist so configure won't fail on partial checkouts
 set(EXISTING_SOURCES "")
 foreach(f ${PROJECT_SOURCES})
   if(EXISTS ${f})
@@ -74,10 +73,9 @@ foreach(f ${PROJECT_SOURCES})
   endif()
 endforeach()
 
-# Create executable target
 add_executable(ExynosTools ${EXISTING_SOURCES})
 
-# Link to Vulkan if available (CI showed libvulkan in link path)
+# Link to Vulkan if available
 find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND)
   pkg_check_modules(VULKAN_PKG QUIET vulkan)
@@ -97,15 +95,14 @@ else()
   endif()
 endif()
 
-# If you have additional libraries (pthread, dl) used by CI environment, link them too
+# Threads
 find_package(Threads)
 if(THREADS_FOUND)
   target_link_libraries(ExynosTools PRIVATE Threads::Threads)
 endif()
 
-# Ensure the generated SPIR-V headers are created before compiling the target
-# If you have a shader generator custom command that writes into ${GENERATED_SPV_DIR},
-# add a dependency here. Example (uncomment and edit if you already use a generator):
+# If you have a shader-generator custom command that writes into ${GENERATED_SPV_DIR},
+# make sure it runs before compiling ExynosTools. Example commented snippet:
 #
 # add_custom_command(
 #   OUTPUT ${GENERATED_SPV_DIR}/bc1_shader.h ${GENERATED_SPV_DIR}/bc2_shader.h ...
@@ -114,19 +111,11 @@ endif()
 # )
 # add_custom_target(gen_spv_headers DEPENDS ${GENERATED_SPV_DIR}/bc1_shader.h ...)
 # add_dependencies(ExynosTools gen_spv_headers)
-#
-# If you already have a CMake rule that generates headers into build/generated_spv,
-# ensure it runs before building ExynosTools; CI logs already showed such a step.
 
-# Provide helpful configure-time message
 message(STATUS "ExynosTools configured with include dirs: ${INCLUDE_DIR}, ${SRC_DIR}, ${GENERATED_SPV_DIR}")
 message(STATUS "Sources compiled: ${EXISTING_SOURCES}")
 
-# Export compile definitions to the target (repeat for target-specific defines if desired)
 target_compile_definitions(ExynosTools PRIVATE
   EXYNOSTOOLS_STAGING_POOL_SIZE=${EXYNOSTOOLS_STAGING_POOL_SIZE}
   XCLIPSE_940_OPTIMIZE=${XCLIPSE_940_OPTIMIZE}
 )
-
-# If you want more verbose builds, enable this line
-# set(CMAKE_VERBOSE_MAKEFILE ON)
