@@ -1,12 +1,14 @@
 #version 450
 
-// Specialization constant ID 0 (matches pipeline and CMake)
+// Specialization constant ID 0 (controlled from pipeline/CMake)
 layout(constant_id = 0) const uint WG_SIZE = 64;
 
-// Descriptor layout
+// Binding 0: compressed blocks stream (std430 tightly packed)
 layout(std430, binding = 0) readonly buffer SrcBC {
     uint bc_words[];
 };
+
+// Binding 1: output storage image
 layout(binding = 1, rgba8) uniform writeonly image2D dst_rgba;
 
 // Push constants: width, height, groupsX, reserved, wg_size, scale_100
@@ -19,31 +21,41 @@ layout(push_constant) uniform PushData {
     uint scale100;
 } PC;
 
-// Helpers
-uint u8(uint w, uint byteIdx) {
-    return (w >> (byteIdx * 8u)) & 0xffu;
-}
-uint u5(uint v, uint shift) { return (v >> shift) & 31u; }
-uint u6(uint v, uint shift) { return (v >> shift) & 63u; }
-
-float u8_to_float(uint v) { return float(v) / 255.0; }
-float u5_to_float(uint v) { return float(v) / 31.0; }
-float u6_to_float(uint v) { return float(v) / 63.0; }
-
-vec4 clamp01(vec4 c) { return clamp(c, vec4(0.0), vec4(1.0)); }
-
-// Write one pixel if in bounds
-void store_px(ivec2 p, vec4 rgba) {
-    if (uint(p.x) < PC.width && uint(p.y) < PC.height) {
-        imageStore(dst_rgba, p, clamp01(rgba));
-    }
+// Per-invocation block index: 1 thread = 1 4x4 block
+uint block_index() {
+    return gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * PC.groupsX;
 }
 
-// Get 4x4 block origin (in pixels) from linear block index
-// Blocks are 4x4 pixels; rowBlocks = ceil(width / 4)
-uvec2 block_origin(uint blockIndex) {
+// Block’s top-left pixel in 2D
+uvec2 block_origin(uint bi) {
     uint rowBlocks = (PC.width + 3u) / 4u;
-    uint by = blockIndex / rowBlocks;
-    uint bx = blockIndex % rowBlocks;
+    uint by = bi / rowBlocks;
+    uint bx = bi % rowBlocks;
     return uvec2(bx * 4u, by * 4u);
+}
+
+// Bit helpers
+uint u5(uint v, uint sh) { return (v >> sh) & 31u; }
+uint u6(uint v, uint sh) { return (v >> sh) & 63u; }
+uint u8(uint v, uint sh) { return (v >> sh) & 255u; }
+uint getBits2x(uint lo, uint hi, uint start, uint count) {
+    if (start + count <= 32u) return (lo >> start) & ((1u << count) - 1u);
+    uint loPart = lo >> start;
+    uint hiPart = hi & ((1u << ((start + count) - 32u)) - 1u);
+    return loPart | (hiPart << (32u - start));
+}
+
+// Normalization
+float unormN(uint v, uint n) { return float(v) / float((1u << n) - 1u); }
+float snormN(uint v, uint n) {
+    int ival = int(v);
+    if ((ival & (1 << (n - 1))) != 0) ival -= (1 << n); // sign extend
+    int maxv = (1 << (n - 1)) - 1;
+    return clamp(float(ival) / float(maxv), -1.0, 1.0);
+}
+
+// Write if in bounds
+void store_px(ivec2 p, vec4 rgba) {
+    if (uint(p.x) < PC.width && uint(p.y) < PC.height)
+        imageStore(dst_rgba, p, clamp(rgba, vec4(0.0), vec4(1.0)));
 }
