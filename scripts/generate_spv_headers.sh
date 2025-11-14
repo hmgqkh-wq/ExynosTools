@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# scripts/generate_spv_headers.sh
 # SPDX-License-Identifier: MIT
-# Defensive SPIR-V generator with per-shader captured logs.
-# Run with: bash scripts/generate_spv_headers.sh
+# Serial generator: compile -> validate -> optional optimize -> emit header
+# Call via: bash scripts/generate_spv_headers.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,7 +41,7 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
   echo
   echo "=== Processing shader: $name ==="
   echo "Logs -> $log"
-  rm -f "$log"
+  rm -f "${log}"* || true
 
   echo "1) Compile -> SPV"
   if ! glslangValidator -V --target-env vulkan1.2 "-I${SH_DIR}" -o "$raw" "$src" 2> "${log}.glslang.stderr"; then
@@ -66,9 +67,7 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
     echo "2) Validate SPV with spirv-val"
     if ! "$SPIRV_VAL_BIN" "$raw" > "${log}.spirv-val.stdout" 2> "${log}.spirv-val.stderr"; then
       echo "ERROR: spirv-val failed for $raw"
-      echo "----- spirv-val stderr -----"
       tail -n 200 "${log}.spirv-val.stderr" || true
-      echo "----- end spirv-val stderr -----"
       exit 1
     fi
   fi
@@ -81,9 +80,7 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
       if [ -n "$SPIRV_VAL_BIN" ]; then
         if ! "$SPIRV_VAL_BIN" "$out" > "${log}.spirv-val.opt.stdout" 2> "${log}.spirv-val.opt.stderr"; then
           echo "WARNING: spirv-val failed on optimized SPV; falling back to raw SPV"
-          echo "----- spirv-val (opt) stderr -----"
           tail -n 200 "${log}.spirv-val.opt.stderr" || true
-          echo "----- end spirv-val (opt) stderr -----"
           out="$raw"
         fi
       fi
@@ -94,12 +91,13 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
     fi
   fi
 
-  echo "4) Emit C header from SPV -> $OUT_DIR/${base}_shader.h"
-  if ! python3 "$PY" "$out" "$OUT_DIR/${base}_shader.h" "${base}_spv" > "${log}.emit.stdout" 2> "${log}.emit.stderr"; then
+  # Build symbol name that matches project expectation: <base>_shader_spv
+  sym_name="${base}_shader_spv"
+
+  echo "4) Emit C header from SPV -> $OUT_DIR/${base}_shader.h (symbol: $sym_name)"
+  if ! python3 "$PY" "$out" "$OUT_DIR/${base}_shader.h" "$sym_name" > "${log}.emit.stdout" 2> "${log}.emit.stderr"; then
     echo "ERROR: emit_spv_header.py failed for $out"
-    echo "----- emit_spv_header stderr -----"
     tail -n 200 "${log}.emit.stderr" || true
-    echo "----- end emit_spv_header stderr -----"
     exit 1
   fi
 
