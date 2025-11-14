@@ -1,4 +1,3 @@
-// include/xeno_log.h
 #ifndef XENO_LOG_H_
 #define XENO_LOG_H_
 
@@ -6,7 +5,6 @@
 #include <stdarg.h>
 #include "logging.h"
 
-/* Prefer logging.h definitions; only define if missing */
 #ifndef XENO_LOGE
 #define XENO_LOGE(...) logging_error(__VA_ARGS__)
 #endif
