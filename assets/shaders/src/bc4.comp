@@ -1,8 +1,8 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x = WG_SIZE) in;
+layout(local_size_x = 64) in;
 
-// BC4: single-channel (R) endpoints 8-bit, 3-bit indices
+// BC4: single-channel endpoints + 48-bit 3-bit indices
 
 float chan_interp(uint c0, uint c1, uint idx, bool isSigned) {
     float C0 = isSigned ? snormN(c0, 8) : float(c0) / 255.0;
@@ -25,16 +25,16 @@ void main() {
     uvec2 origin = block_origin(bi);
 
     uint r0r1 = bc_words[bi * 2u + 0u];
-    uint ri0  = bc_words[bi * 2u + 1u];
+    uint ri_lo = bc_words[bi * 2u + 1u];
+    uint ri_hi16 = (ri_lo >> 16) & 0xFFFFu; // if indices are split differently adjust accordingly
 
     uint r0 = r0r1 & 0xFFu;
     uint r1 = (r0r1 >> 8) & 0xFFu;
 
-    uint64_t rIdx = uint64_t(ri0);
     bool isSigned = (PC.scale100 == 200u);
 
     for (uint t = 0u; t < 16u; ++t) {
-        uint ridx = uint((rIdx >> (t * 3u)) & 7u);
+        uint ridx = read3_48(ri_lo, ri_hi16, t * 3u);
         float R = chan_interp(r0, r1, ridx, isSigned);
         uint px = t & 3u, py = t >> 2;
         store_px(ivec2(origin) + ivec2(px, py), vec4(R, R, R, 1.0));
