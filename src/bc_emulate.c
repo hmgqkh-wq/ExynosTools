@@ -7,7 +7,9 @@
 #include "bc6h_shader.h"
 #include "bc7_shader.h"
 #include "xeno_wrapper.h"
+
 #include <string.h>
+#include <pthread.h>            // pthread_create, pthread_detach
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_beta.h>
 
@@ -160,6 +162,7 @@ XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
 
     ctx->device = device;
     ctx->physicalDevice = phys;
+    ctx->dstView = VK_NULL_HANDLE;
 
     // Load persisted pipeline cache if present
     if (xeno_wrapper_load_pipeline_cache(device, PIPELINE_CACHE_PATH, &ctx->pipelineCache) != VK_SUCCESS) {
