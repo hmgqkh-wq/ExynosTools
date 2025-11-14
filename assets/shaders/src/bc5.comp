@@ -2,54 +2,43 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "bc_common.glsl"
 
+// BC5: two BC4 blocks for R and G. 4 uints per block: epR, idxR, epG, idxG.
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) buffer InputBuffer {
-    uint data[];
-} inputBuffer;
-
+layout(set = 0, binding = 0) readonly buffer InputBuffer { uint data[]; } inputBuffer;
 layout(set = 0, binding = 1, rg32f) uniform image2D outputImage;
 
-void main() {
-    ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;
-    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 4;
+void main()
+{
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 base = b * 4;
+    ivec2 dim = imageSize(outputImage);
+    if (base.x >= dim.x || base.y >= dim.y) return;
 
-    uint redBlock = inputBuffer.data[blockIndex];
-    uint redIndices = inputBuffer.data[blockIndex + 1];
-    uint greenBlock = inputBuffer.data[blockIndex + 2];
-    uint greenIndices = inputBuffer.data[blockIndex + 3];
+    int blocksX = (dim.x + 3) >> 2;
+    uint blockIndex = uint(b.y * blocksX + b.x);
+    uint d = blockIndex * 4u;
 
-    float r0 = unpackAlpha(redBlock & 0xFF);
-    float r1 = unpackAlpha((redBlock >> 8) & 0xFF);
+    uint epR  = inputBuffer.data[d + 0u];
+    uint idxR = inputBuffer.data[d + 1u];
+    uint epG  = inputBuffer.data[d + 2u];
+    uint idxG = inputBuffer.data[d + 3u];
 
-    float rAlphas[8];
-    rAlphas[0] = r0;
-    rAlphas[1] = r1;
-    rAlphas[2] = (6.0 * r0 + 1.0 * r1) / 7.0;
-    rAlphas[3] = (5.0 * r0 + 2.0 * r1) / 7.0;
-    rAlphas[4] = (4.0 * r0 + 3.0 * r1) / 7.0;
-    rAlphas[5] = (3.0 * r0 + 4.0 * r1) / 7.0;
-    rAlphas[6] = (2.0 * r0 + 5.0 * r1) / 7.0;
-    rAlphas[7] = (1.0 * r0 + 6.0 * r1) / 7.0;
+    float r0 = norm8(epR & 0xFFu);
+    float r1 = norm8((epR >> 8) & 0xFFu);
+    float g0 = norm8(epG & 0xFFu);
+    float g1 = norm8((epG >> 8) & 0xFFu);
 
-    float g0 = unpackAlpha(greenBlock & 0xFF);
-    float g1 = unpackAlpha((greenBlock >> 8) & 0xFF);
+    float R[8]; float G[8];
+    alpha8(r0, r1, R);
+    alpha8(g0, g1, G);
 
-    float gAlphas[8];
-    gAlphas[0] = g0;
-    gAlphas[1] = g1;
-    gAlphas[2] = (6.0 * g0 + 1.0 * g1) / 7.0;
-    gAlphas[3] = (5.0 * g0 + 2.0 * g1) / 7.0;
-    gAlphas[4] = (4.0 * g0 + 3.0 * g1) / 7.0;
-    gAlphas[5] = (3.0 * g0 + 4.0 * g1) / 7.0;
-    gAlphas[6] = (2.0 * g0 + 5.0 * g1) / 7.0;
-    gAlphas[7] = (1.0 * g0 + 6.0 * g1) / 7.0;
+    for (uint t=0u; t<16u; ++t) {
+        uint ri = idx3(idxR, t);
+        uint gi = idx3(idxG, t);
+        vec2 rg = vec2(R[ri], G[gi]);
 
-    for (uint y = 0u; y < 4u; y++) {
-        for (uint x = 0u; x < 4u; x++) {
-            uint rIdx = (redIndices >> ((y * 4 + x) * 3)) & 0x7;
-            uint gIdx = (greenIndices >> ((y * 4 + x) * 3)) & 0x7;
-            imageStore(outputImage, coord + ivec2(x, y), vec2(rAlphas[rIdx], gAlphas[gIdx]));
-        }
+        ivec2 p = base + ivec2(int(t % 4u), int(t / 4u));
+        if (p.x < dim.x && p.y < dim.y) imageStore(outputImage, p, vec4(rg,0.0,0.0));
     }
 }
