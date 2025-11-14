@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# scripts/generate_spv_headers.sh
 # Serial, defensive SPIR-V generation: compile -> validate -> optional optimize -> emit header.
+# Designed to be run with: bash scripts/generate_spv_headers.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SH_DIR="$ROOT/assets/shaders/src"
@@ -35,11 +35,9 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
   echo "1) Compile -> SPV"
   if ! glslangValidator -V --target-env vulkan1.2 "-I${SH_DIR}" -o "$raw" "$src"; then
     echo "ERROR: glslangValidator failed for $src"
-    echo "---- glslangValidator stderr (last 200 lines) ----"
     exit 1
   fi
 
-  # Basic sanity: SPV file must be non-empty and size multiple of 4
   if [ ! -s "$raw" ]; then
     echo "ERROR: Generated SPV empty: $raw"
     exit 1
@@ -50,14 +48,13 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
     exit 1
   fi
 
-  # Optional validation
   if [ -n "$SPIRV_VAL_BIN" ]; then
     echo "2) Validate SPV with spirv-val"
     if ! "$SPIRV_VAL_BIN" "$raw"; then
-      echo "WARNING: spirv-val failed for $raw; attempting one retry after whitespace-safe copy"
+      echo "WARNING: spirv-val failed for $raw; attempting retry"
       cp "$raw" "${raw}.retry"
       if ! "$SPIRV_VAL_BIN" "${raw}.retry"; then
-        echo "ERROR: spirv-val still failing for $raw; printing first 200 bytes in hex for debugging"
+        echo "ERROR: spirv-val still failing for $raw"
         hexdump -n 200 -C "$raw" || true
         exit 1
       else
@@ -66,13 +63,11 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
     fi
   fi
 
-  # Optional optimization (safe: fail -> skip)
   if [ -n "$SPIRV_OPT_BIN" ]; then
     echo "3) Optimize SPV with spirv-opt"
     if "$SPIRV_OPT_BIN" --strip-debug -O "$raw" -o "$opt"; then
       echo "spirv-opt succeeded -> $opt"
       out="$opt"
-      # Validate optimized SPV too if spirv-val available
       if [ -n "$SPIRV_VAL_BIN" ]; then
         if ! "$SPIRV_VAL_BIN" "$out"; then
           echo "WARNING: spirv-val failed on optimized SPV; using unoptimized SPV"
@@ -85,7 +80,6 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
     fi
   fi
 
-  # Emit header
   echo "4) Emit C header from SPV -> $OUT_DIR/${base}_shader.h"
   if ! python3 "$PY" "$out" "$OUT_DIR/${base}_shader.h" "${base}_spv"; then
     echo "ERROR: emit_spv_header.py failed for $out"
