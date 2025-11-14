@@ -22,18 +22,17 @@ endif()
 # CMake module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
-# Attempt to include helper modules if present; fail with clear message if missing
+# Include generator helper (fatal if missing)
 if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/generate_shader_headers.cmake")
   include(cmake/generate_shader_headers.cmake)
 else()
-  message(FATAL_ERROR "Required CMake module missing: cmake/generate_shader_headers.cmake. Add it or restore from repo.")
+  message(FATAL_ERROR "Required CMake module missing: cmake/generate_shader_headers.cmake.")
 endif()
 
-# Optional helper that adds project include dirs; include if present, else add include dirs here.
+# Optional add_project_includes helper; fallback if missing
 if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/add_project_includes.cmake")
   include(cmake/add_project_includes.cmake)
 else()
-  # Fallback: explicitly add common include dirs so sources can find headers like xeno_bc.h and generated shaders
   include_directories(
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/src"
@@ -42,14 +41,10 @@ else()
   message(STATUS "cmake/add_project_includes.cmake not found; using fallback include_directories")
 endif()
 
-# Find Vulkan (required)
+# Find Vulkan
 find_package(Vulkan REQUIRED)
 
-if(NOT Vulkan_FOUND)
-  message(FATAL_ERROR "Vulkan not found. Install Vulkan SDK or libvulkan-dev.")
-endif()
-
-# Collect source files explicitly; skip missing files gracefully
+# Source list (only existing files included)
 set(EXYNOSTOOLS_SOURCES
   src/bc_emulate.c
   src/detect.c
@@ -67,27 +62,23 @@ foreach(f ${EXYNOSTOOLS_SOURCES})
   endif()
 endforeach()
 
-# Define target after sources are resolved
 add_executable(${PROJECT_NAME}
   ${EXYNOSTOOLS_EXISTING_SOURCES}
 )
 
-# Ensure gen_shaders target (created by generate_shader_headers.cmake) runs before build if it exists
+# Ensure shader generation runs before build (if gen_shaders exists)
 if(TARGET gen_shaders)
   add_dependencies(${PROJECT_NAME} gen_shaders)
 endif()
 
-# Explicit target include directories (modern CMake)
 target_include_directories(${PROJECT_NAME} PUBLIC
   "${CMAKE_SOURCE_DIR}/include"
   "${CMAKE_SOURCE_DIR}/src"
   "${CMAKE_SOURCE_DIR}/build_generated_spv"
 )
 
-# Link Vulkan
 target_link_libraries(${PROJECT_NAME} PUBLIC Vulkan::Vulkan)
 
-# Compiler flags tuned for performance on Xclipse 940; keep conservative portability
 target_compile_options(${PROJECT_NAME} PRIVATE
   -Wall -Wextra -Wno-unused-parameter
 )
@@ -96,12 +87,11 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(${PROJECT_NAME} PRIVATE -O3)
 endif()
 
-# Export staging pool size to C sources
 target_compile_definitions(${PROJECT_NAME} PRIVATE
   EXYNOSTOOLS_STAGING_POOL_SIZE=${EXYNOSTOOLS_STAGING_POOL_SIZE}
 )
 
-# Optional microbenchmark target (if harness exists)
+# Optional benchmark target
 if(EXISTS "${CMAKE_SOURCE_DIR}/tools/benchmark_xclipse.c")
   add_executable(exynostools_bench tools/benchmark_xclipse.c)
   target_link_libraries(exynostools_bench PUBLIC Vulkan::Vulkan)
@@ -111,10 +101,8 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/tools/benchmark_xclipse.c")
   endif()
 endif()
 
-# Install (optional)
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
 
-# Helpful status for CI and local dev (Xclipse 940 focus)
 message(STATUS "ExynosTools configured (Xclipse 940 optimized). Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Generated headers dir: ${CMAKE_SOURCE_DIR}/include")
 message(STATUS "Staging pool default size (bytes): ${EXYNOSTOOLS_STAGING_POOL_SIZE}")
