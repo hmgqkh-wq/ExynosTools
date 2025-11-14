@@ -1,8 +1,8 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x = WG_SIZE) in;
+layout(local_size_x = 64) in;
 
-// BC2: BC1 RGB + explicit alpha block (4-bit alpha per texel)
+// BC2: BC1 RGB + explicit 4-bit alpha per texel (64 bits alpha + 64 bits color)
 
 float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
 float expand6(uint v) { return float((v << 2) | (v >> 4)) / 255.0; }
@@ -17,14 +17,17 @@ void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    // 8 bytes alpha + 8 bytes BC1 RGB
-    uint a0 = bc_words[bi * 4u + 0u];
-    uint a1 = bc_words[bi * 4u + 1u];
+    // Alpha (64 bits): a_lo, a_hi
+    uint a_lo = bc_words[bi * 4u + 0u];
+    uint a_hi = bc_words[bi * 4u + 1u];
+
+    // Color (64 bits): endpoints/indices like BC1
     uint w0 = bc_words[bi * 4u + 2u];
     uint w1 = bc_words[bi * 4u + 3u];
 
     uint c0 = w0 & 0xFFFFu;
     uint c1 = (w0 >> 16) & 0xFFFFu;
+
     vec3 C0 = color565(c0);
     vec3 C1 = color565(c1);
 
@@ -33,16 +36,12 @@ void main() {
     if (c0 > c1) { P[2] = (2.0 * C0 + C1) / 3.0; P[3] = (C0 + 2.0 * C1) / 3.0; }
     else { P[2] = (C0 + C1) / 2.0; P[3] = vec3(0.0); }
 
-    // 16 texels: 2-bit color indices in w1; 4-bit alpha indices across a0,a1
     for (uint t = 0u; t < 16u; ++t) {
-        uint cidx = (w1 >> (t * 2u)) & 3u;
+        uint cidx = read2_32(w1, t * 2u);
         vec3 rgb = P[cidx];
 
-        uint shift = (t * 4u);
-        uint src = (shift < 32u) ? a0 : a1;
-        uint s = (shift < 32u) ? shift : (shift - 32u);
-        uint aval = (src >> s) & 0xFu;
-        float a = float(aval) / 15.0;
+        uint apos = t * 4u;
+        float a = float(read4_64(a_lo, a_hi, apos)) / 15.0;
 
         uint px = t & 3u, py = t >> 2;
         store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
