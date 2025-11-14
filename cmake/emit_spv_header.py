@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # cmake/emit_spv_header.py
 # SPDX-License-Identifier: MIT
-# Emit a C header from a SPIR-V binary (byte array + _len)
-# Usage: emit_spv_header.py <input.spv> <output.h> <symbol_prefix>
 import sys, os, struct
 
 def die(msg, code=1):
@@ -23,7 +21,6 @@ data = open(in_spv, "rb").read()
 if len(data) == 0:
     die(f"ERROR: Input SPV empty: {in_spv}", 4)
 
-# pad to 4 bytes for safety (SPIR-V requirement). Keep real byte length in _len symbol.
 pad = (4 - (len(data) % 4)) % 4
 if pad: data += b'\x00' * pad
 
@@ -45,9 +42,7 @@ with open(out_h, "w", newline="\n") as fh:
     fh.write("#ifdef __cplusplus\n}\n#endif\n\n")
     fh.write("#endif /* %s */\n" % guard)
 
-# Create the implementation .c header alongside for ease (so there's a single header that contains definitions)
-impl_h = out_h
-with open(impl_h, "a", newline="\n") as fh:
+with open(out_h, "a", newline="\n") as fh:
     fh.write("\n/* Implementation: byte array and size */\n")
     fh.write("const unsigned char %s[] = {\n" % sym)
     for i in range(0, len(data), 16):
