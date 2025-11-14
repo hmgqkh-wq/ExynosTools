@@ -1,7 +1,8 @@
-# SPDX-License-Identifier: MIT
 # cmake/generate_shader_headers.cmake
+# SPDX-License-Identifier: MIT
 # Centralized shader generation target that invokes scripts/generate_spv_headers.sh serially.
-# Guarded so including this file multiple times won't error (avoids duplicate gen_shaders).
+# Safe to include multiple times; exports include dirs so project sources can find headers like logging.h.
+
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_program(PYTHON3_EXECUTABLE python3)
 
@@ -12,7 +13,6 @@ if(NOT PYTHON3_EXECUTABLE)
   message(FATAL_ERROR "python3 not found. Install Python 3.")
 endif()
 
-# If the target already exists, do nothing (safe re-include)
 if(TARGET gen_shaders)
   message(STATUS "gen_shaders target already defined; skipping duplicate creation")
   return()
@@ -34,13 +34,20 @@ add_custom_target(gen_shaders
   VERBATIM
 )
 
-# Ensure common targets wait for generated headers; adapt names to your project
+# Make sure main targets wait for generated headers; adapt these names if your targets differ
 foreach(tgt IN ITEMS exynostools xeno_wrapper)
   if(TARGET ${tgt})
     add_dependencies(${tgt} gen_shaders)
   endif()
 endforeach()
 
-include_directories("${GENERATED_INCLUDE_DIR}")
+# Make generated headers discoverable to build and ensure project source headers are also found.
+# Some sources include project headers like "logging.h" from src/ — add that too.
+include_directories(
+  "${GENERATED_INCLUDE_DIR}"
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_SOURCE_DIR}/include"
+)
+
 message(STATUS "Using centralized shader generator: ${SHADER_SCRIPT}")
 message(STATUS "Generated headers dir: ${GENERATED_INCLUDE_DIR}")
