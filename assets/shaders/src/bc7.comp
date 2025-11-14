@@ -1,9 +1,47 @@
 #version 450
 #include "bc_common.glsl"
-
 layout(local_size_x_id = 0) in;
 
+// BC7 decode (complex; multiple modes with partitions and P-bits).
+// This shader implements a common subset: single partition, mode with 2 endpoints,
+// 7-bit color channels, and 4-bit indices. Extend for full spec coverage if needed.
+
+uint bitsu(uint v, uint s, uint n) { return (v >> s) & ((1u << n) - 1u); }
+float u7_to_float(uint v) { return float(v) / 127.0; }
+
 void main() {
-    ivec2 p = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
-    write_pixel(p);
+    uint blockIndex = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * PC.groupsX;
+    uvec2 origin = block_origin(blockIndex);
+
+    // 16 bytes per block
+    uint b0 = bc_words[blockIndex * 4u + 0u];
+    uint b1 = bc_words[blockIndex * 4u + 1u];
+    uint b2 = bc_words[blockIndex * 4u + 2u];
+    uint b3 = bc_words[blockIndex * 4u + 3u];
+
+    // Assume mode with endpoints packed as 7 bits per channel and indices 4 bits per texel.
+    // Endpoint 0
+    uint R0 = bitsu(b0, 0, 7);
+    uint G0 = bitsu(b0, 7, 7);
+    uint B0 = bitsu(b0, 14, 7);
+    // Endpoint 1
+    uint R1 = bitsu(b0, 21, 7) | (bitsu(b1, 0, 3) << 7);
+    uint G1 = bitsu(b1, 3, 7);
+    uint B1 = bitsu(b1, 10, 7);
+
+    vec3 c0 = vec3(u7_to_float(R0), u7_to_float(G0), u7_to_float(B0));
+    vec3 c1 = vec3(u7_to_float(R1), u7_to_float(G1), u7_to_float(B1));
+
+    // Indices 4 bits each, 16 texels -> 64 bits
+    uint64_t idx64 = uint64_t(b2) | (uint64_t(b3) << 32);
+
+    for (uint py = 0u; py < 4u; ++py) {
+        for (uint px = 0u; px < 4u; ++px) {
+            uint t = py * 4u + px;
+            uint idx = uint((idx64 >> (t * 4u)) & 15u);
+            float w = float(idx) / 15.0;
+            vec3 rgb = mix(c0, c1, w);
+            store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, 1.0));
+        }
+    }
 }
