@@ -30,7 +30,7 @@ string(LENGTH "${_BIN_DATA}" _len_bytes)
 math(EXPR _num_words "(${_len_bytes} + 3) / 4")
 
 set(_words "")
-# Convert each 4-byte chunk into a 32-bit word and format as 8-digit hex
+# Convert each 4-byte chunk into a 32-bit word and format as 8-digit hex (portable)
 foreach(i RANGE 0 ${_num_words} 1)
   math(EXPR off "${i} * 4")
   set(_w 0)
@@ -40,19 +40,16 @@ foreach(i RANGE 0 ${_num_words} 1)
       break()
     endif()
     string(SUBSTRING "${_BIN_DATA}" ${idx} 1 _byte)
-    # byte numeric value
     execute_process(COMMAND /bin/printf "%d" "'${_byte}"
       OUTPUT_VARIABLE _bval
       OUTPUT_STRIP_TRAILING_WHITESPACE)
     math(EXPR _w "${_w} + (${_bval} << (${b} * 8))")
   endforeach()
-  # Format the 32-bit word as 8-digit lowercase hex (portable on CI)
   execute_process(COMMAND /bin/printf "%08x" "${_w}"
     OUTPUT_VARIABLE _hex
     OUTPUT_STRIP_TRAILING_WHITESPACE)
   string(APPEND _words "0x${_hex}, ")
 endforeach()
 
-# Write header: uint32_t array and length in bytes
 file(WRITE "${__hdr_out}" "#pragma once\n#include <stdint.h>\nstatic const uint32_t ${VAR_NAME}[] = { ${_words} };\nstatic const unsigned int ${VAR_NAME}_len = sizeof(${VAR_NAME});\n")
 message(STATUS "Generated header ${__hdr_out} (${_num_words} words, ${_len_bytes} bytes).")
