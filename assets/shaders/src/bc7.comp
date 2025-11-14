@@ -2,41 +2,51 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "bc_common.glsl"
 
+// BC7: complex modes; this baseline assumes a simple two-endpoint mode with 2-bit indices.
+// It compiles and runs; extend modes/partitioning for full quality.
+// Input: 4 uints per block (128 bits).
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) buffer InputBuffer {
-    uint data[];
-} inputBuffer;
-
+layout(set = 0, binding = 0) readonly buffer InputBuffer { uint data[]; } inputBuffer;
 layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
 
-void main() {
-    ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;
-    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 4;
+void main()
+{
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 base = b * 4;
+    ivec2 dim = imageSize(outputImage);
+    if (base.x >= dim.x || base.y >= dim.y) return;
 
-    uint mode = inputBuffer.data[blockIndex] & 0xFF;  // BC7 mode
+    int blocksX = (dim.x + 3) >> 2;
+    int blockIndex = b.y * blocksX + b.x;
+    int d = blockIndex * 4;
 
-    // Mode-specific decoding (reduce branches with switch)
-    switch (mode) {
-        case 0:
-            // Mode 0 example (unroll for all modes)
-            vec4 endpoints[8];
-            // Unroll endpoint extraction
-            for (int i = 0; i < 8; i++) endpoints[i] = unpackBC7Endpoint(inputBuffer.data[blockIndex + i], i);
+    uint indices32 = inputBuffer.data[d + 0];
+    uint e0 = inputBuffer.data[d + 1];
+    uint e1 = inputBuffer.data[d + 2];
+    uint eA = inputBuffer.data[d + 3]; // optional alpha endpoints
 
-            half4 hEndpoints[8];
-            for (int i = 0; i < 8; i++) hEndpoints[i] = half4(endpoints[i]);  // Half for interp
+    // Simplified endpoints: RGB 8-bit from e0/e1
+    vec3 C0 = vec3(norm8( (e0      ) & 0xFFu),
+                   norm8( (e0 >> 8 ) & 0xFFu),
+                   norm8( (e0 >> 16) & 0xFFu));
+    vec3 C1 = vec3(norm8( (e1      ) & 0xFFu),
+                   norm8( (e1 >> 8 ) & 0xFFu),
+                   norm8( (e1 >> 16) & 0xFFu));
+    // Alpha endpoints (optional)
+    float a0 = norm8( (eA      ) & 0xFFu);
+    float a1 = norm8( (eA >> 8 ) & 0xFFu);
+    float A[8]; alpha8(a0, a1, A);
 
-            uint indices = inputBuffer.data[blockIndex + 8];
+    for (uint t=0u; t<16u; ++t) {
+        uint i = idx2(indices32, t);
+        vec3 rgb = (i == 0u) ? C0 :
+                   (i == 1u) ? C1 :
+                   (i == 2u) ? ((2.0 * C0 + 1.0 * C1) * (1.0 / 3.0)) :
+                               ((1.0 * C0 + 2.0 * C1) * (1.0 / 3.0));
+        float a = A[(i & 0x3u)]; // placeholder tie alpha to index for baseline
 
-            for (uint y = 0u; y < 4u; y++) {
-                for (uint x = 0u; x < 4u; x++) {
-                    uint idx = (indices >> ((y * 4 + x) * 4)) & 0xF;
-                    half4 color = hEndpoints[0] + (hEndpoints[1] - hEndpoints[0]) * (half(idx) / 15.0h);
-                    imageStore(outputImage, coord + ivec2(x, y), vec4(color));
-                }
-            }
-            break;
-        // ... (implement cases for modes 1-7 with similar unrolled logic)
+        ivec2 p = base + ivec2(int(t % 4u), int(t / 4u));
+        if (p.x < dim.x && p.y < dim.y) imageStore(outputImage, p, vec4(rgb, a));
     }
 }
