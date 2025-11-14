@@ -74,11 +74,8 @@ target_compile_definitions(xeno_wrapper PRIVATE
     $<$<BOOL:${ENABLE_VRS}>:VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME>
 )
 
-target_link_libraries(xeno_wrapper PRIVATE
-    dl
-    Threads::Threads
-    Vulkan::Vulkan
-)
+find_package(Threads REQUIRED)
+target_link_libraries(xeno_wrapper PRIVATE dl Threads::Threads Vulkan::Vulkan)
 
 target_include_directories(xeno_wrapper PRIVATE ${SHADER_HEADERS_DIR})
 
@@ -94,7 +91,3 @@ install(TARGETS xeno_wrapper
 install(FILES usr/share/meta.json DESTINATION usr/share)
 install(FILES etc/exynostools/performance_mode.conf DESTINATION etc/exynostools)
 install(DIRECTORY etc/exynostools/profiles DESTINATION etc/exynostools)
-
-# Add unit test executable
-add_executable(bc_test tests/bc_test.c)
-target_link_libraries(bc_test PRIVATE xeno_wrapper Vulkan::Vulkan)
