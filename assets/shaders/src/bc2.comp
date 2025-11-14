@@ -1,52 +1,50 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x_id = 0) in;
+layout(local_size_x = WG_SIZE) in;
 
-vec3 rgb565_to_rgb(uint c) {
-    float r = unormN(u5(c, 11), 5);
-    float g = unormN(u6(c, 5), 6);
-    float b = unormN(u5(c, 0), 5);
-    return vec3(r, g, b);
+// BC2: BC1 RGB + explicit alpha block (4-bit alpha per texel)
+
+float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
+float expand6(uint v) { return float((v << 2) | (v >> 4)) / 255.0; }
+vec3 color565(uint c) {
+    uint r5 = (c >> 11) & 31u;
+    uint g6 = (c >> 5) & 63u;
+    uint b5 = c & 31u;
+    return vec3(expand5(r5), expand6(g6), expand5(b5));
 }
 
 void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
+    // 8 bytes alpha + 8 bytes BC1 RGB
     uint a0 = bc_words[bi * 4u + 0u];
     uint a1 = bc_words[bi * 4u + 1u];
-    uint c0w = bc_words[bi * 4u + 2u];
-    uint c1w = bc_words[bi * 4u + 3u];
+    uint w0 = bc_words[bi * 4u + 2u];
+    uint w1 = bc_words[bi * 4u + 3u];
 
-    uint c0 = c0w & 0xffffu;
-    uint c1 = (c0w >> 16) & 0xffffu;
-    vec3 c0_rgb = rgb565_to_rgb(c0);
-    vec3 c1_rgb = rgb565_to_rgb(c1);
+    uint c0 = w0 & 0xFFFFu;
+    uint c1 = (w0 >> 16) & 0xFFFFu;
+    vec3 C0 = color565(c0);
+    vec3 C1 = color565(c1);
 
-    bool fourColor = c0 > c1;
-    vec3 pal[4];
-    pal[0] = c0_rgb;
-    pal[1] = c1_rgb;
-    if (fourColor) {
-        pal[2] = (2.0 * c0_rgb + c1_rgb) / 3.0;
-        pal[3] = (c0_rgb + 2.0 * c1_rgb) / 3.0;
-    } else {
-        pal[2] = (c0_rgb + c1_rgb) * 0.5;
-        pal[3] = vec3(0.0);
-    }
+    vec3 P[4];
+    P[0] = C0; P[1] = C1;
+    if (c0 > c1) { P[2] = (2.0 * C0 + C1) / 3.0; P[3] = (C0 + 2.0 * C1) / 3.0; }
+    else { P[2] = (C0 + C1) / 2.0; P[3] = vec3(0.0); }
 
-    uint colorIdx = c1w;
-
+    // 16 texels: 2-bit color indices in w1; 4-bit alpha indices across a0,a1
     for (uint t = 0u; t < 16u; ++t) {
-        uint shiftA = t * 4u;
-        uint A4 = (shiftA < 32u)
-                  ? ((a0 >> shiftA) & 15u)
-                  : ((a1 >> (shiftA - 32u)) & 15u);
-        float A = float(A4) / 15.0;
+        uint cidx = (w1 >> (t * 2u)) & 3u;
+        vec3 rgb = P[cidx];
 
-        uint cidx = (colorIdx >> (t * 2u)) & 3u;
-        vec3 rgb = pal[cidx];
+        uint shift = (t * 4u);
+        uint src = (shift < 32u) ? a0 : a1;
+        uint s = (shift < 32u) ? shift : (shift - 32u);
+        uint aval = (src >> s) & 0xFu;
+        float a = float(aval) / 15.0;
+
         uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, A));
+        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
     }
 }
