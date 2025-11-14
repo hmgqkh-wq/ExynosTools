@@ -1,16 +1,14 @@
 // src/xeno_log_stream.c
-// Exported function to satisfy legacy references to xeno_log_stream.
-// Forwards formatted messages into the project's logging_info implementation.
+// Provide the legacy symbol FILE* xeno_log_stream(void).
+// This returns stderr so old code that writes to that stream still works.
+// For formatted helper calls, include xeno_log.h which maps printing to logging_info.
 
-#include <stdarg.h>
-#include "logging.h"
+#include <stdio.h>
+#include "xeno_log.h"
 
-/* Exported function called like: xeno_log_stream("fmt %d", ...);
-   For compatibility with older code we forward to logging_info. */
-void xeno_log_stream(const char *fmt, ...)
+/* Return a FILE* compatible stream used by legacy code.
+   stderr is chosen so messages are visible in CI logs. */
+FILE *xeno_log_stream(void)
 {
-    va_list ap;
-    va_start(ap, fmt);
-    logging_info(fmt, ap);
-    va_end(ap);
+    return stderr;
 }
