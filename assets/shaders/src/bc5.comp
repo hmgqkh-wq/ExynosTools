@@ -5,16 +5,22 @@ layout(local_size_x = WG_SIZE) in;
 float chan_interp(uint c0, uint c1, uint idx, bool isSigned) {
     float C0 = isSigned ? snormN(c0, 8) : float(c0) / 255.0;
     float C1 = isSigned ? snormN(c1, 8) : float(c1) / 255.0;
+
+    // Fast, branch-light interpolation per BC4/BC5 spec
     if (c0 > c1) {
-        if (idx == 0u) return C0;
-        if (idx == 1u) return C1;
-        return ((8.0 - float(idx)) * C0 + (float(idx) - 1.0) * C1) / 7.0;
+        // 6 interpolants + endpoints
+        float w = float(idx);
+        return (idx == 0u) ? C0 :
+               (idx == 1u) ? C1 :
+               ((8.0 - w) * C0 + (w - 1.0) * C1) / 7.0;
     } else {
+        // 4 interpolants + endpoints + 0/1 (signed: -1/1)
         if (idx == 0u) return C0;
         if (idx == 1u) return C1;
         if (idx == 6u) return isSigned ? -1.0 : 0.0;
         if (idx == 7u) return 1.0;
-        return ((6.0 - float(idx)) * C0 + (float(idx) - 1.0) * C1) / 5.0;
+        float w = float(idx);
+        return ((6.0 - w) * C0 + (w - 1.0) * C1) / 5.0;
     }
 }
 
@@ -22,6 +28,7 @@ void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
+    // Layout: R-block (2 dwords), G-block (2 dwords)
     uint r0r1 = bc_words[bi * 4u + 0u];
     uint ri0  = bc_words[bi * 4u + 1u];
     uint g0g1 = bc_words[bi * 4u + 2u];
@@ -32,17 +39,21 @@ void main() {
     uint g0 = g0g1 & 0xffu;
     uint g1 = (g0g1 >> 8) & 0xffu;
 
+    // 48 bits of indices per channel packed into 64-bit for simple shifts
     uint64_t rIdx = uint64_t(ri0);
     uint64_t gIdx = uint64_t(gi0);
 
-    bool isSigned = (PC.scale100 == 200u);
+    bool isSigned = (PC.scale100 == 200u); // runtime switch if you need SNORM
 
+    // Unrolled-friendly loop: 16 texels in a 4x4 block
     for (uint t = 0u; t < 16u; ++t) {
         uint ridx = uint((rIdx >> (t * 3u)) & 7u);
         uint gidx = uint((gIdx >> (t * 3u)) & 7u);
         float R = chan_interp(r0, r1, ridx, isSigned);
         float G = chan_interp(g0, g1, gidx, isSigned);
-        uint px = t & 3u, py = t >> 2;
+
+        uint px = t & 3u;
+        uint py = t >> 2;
         store_px(ivec2(origin) + ivec2(px, py), vec4(R, G, 0.0, 1.0));
     }
 }
