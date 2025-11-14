@@ -1,0 +1,55 @@
+#version 450
+#include "bc_common.glsl"
+layout(local_size_x_id = 0) in;
+
+// BC2: 64-bit explicit alpha (4 bits per texel) + BC1 color block.
+vec3 rgb565_to_rgb(uint c) {
+    float r = unormN(u5(c, 11), 5);
+    float g = unormN(u6(c, 5), 6);
+    float b = unormN(u5(c, 0), 5);
+    return vec3(r, g, b);
+}
+
+void main() {
+    uint bi = block_index();
+    uvec2 origin = block_origin(bi);
+
+    // 16 bytes per block: 64-bit alpha + 64-bit BC1 color
+    uint a0 = bc_words[bi * 4u + 0u];
+    uint a1 = bc_words[bi * 4u + 1u];
+    uint c0w = bc_words[bi * 4u + 2u];
+    uint c1w = bc_words[bi * 4u + 3u];
+
+    uint c0 = c0w & 0xffffu;
+    uint c1 = (c0w >> 16) & 0xffffu;
+    vec3 c0_rgb = rgb565_to_rgb(c0);
+    vec3 c1_rgb = rgb565_to_rgb(c1);
+
+    bool fourColor = c0 > c1;
+    vec3 pal[4];
+    pal[0] = c0_rgb;
+    pal[1] = c1_rgb;
+    if (fourColor) {
+        pal[2] = (2.0 * c0_rgb + c1_rgb) / 3.0;
+        pal[3] = (c0_rgb + 2.0 * c1_rgb) / 3.0;
+    } else {
+        pal[2] = (c0_rgb + c1_rgb) * 0.5;
+        pal[3] = vec3(0.0);
+    }
+
+    uint colorIdx = c1w;
+
+    for (uint t = 0u; t < 16u; ++t) {
+        // Alpha: 4 bits per texel, contiguous
+        uint shiftA = t * 4u;
+        uint A4 = (shiftA < 32u)
+                  ? ((a0 >> shiftA) & 15u)
+                  : ((a1 >> (shiftA - 32u)) & 15u);
+        float A = float(A4) / 15.0;
+
+        uint cidx = (colorIdx >> (t * 2u)) & 3u;
+        vec3 rgb = pal[cidx];
+        uint px = t & 3u, py = t >> 2;
+        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, A));
+    }
+}
