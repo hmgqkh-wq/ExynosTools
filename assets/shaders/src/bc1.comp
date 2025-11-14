@@ -1,0 +1,9 @@
+#version 450
+#include "bc_common.glsl"
+
+layout(local_size_x_id = 0) in;
+
+void main() {
+    ivec2 p = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
+    write_pixel(p);
+}
