@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
-# Single-step shader generation target that runs the serial script above.
+# Centralized shader generation target that invokes scripts/generate_spv_headers.sh serially.
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_program(PYTHON3_EXECUTABLE python3)
 
 if(NOT GLSLANG_VALIDATOR)
-  message(FATAL_ERROR "glslangValidator not found. Install glslang-tools or provide glslangValidator in PATH.")
+  message(FATAL_ERROR "glslangValidator not found. Install glslang-tools or put glslangValidator in PATH.")
 endif()
 if(NOT PYTHON3_EXECUTABLE)
   message(FATAL_ERROR "python3 not found. Install Python 3.")
@@ -26,7 +26,7 @@ add_custom_target(gen_shaders
   VERBATIM
 )
 
-# Make sure main targets wait for generated headers
+# Ensure main targets wait for generated headers
 foreach(tgt IN ITEMS exynostools xeno_wrapper)
   if(TARGET ${tgt})
     add_dependencies(${tgt} gen_shaders)
@@ -35,3 +35,4 @@ endforeach()
 
 include_directories("${GENERATED_INCLUDE_DIR}")
 message(STATUS "Using centralized shader generator: ${SHADER_SCRIPT}")
+message(STATUS "Generated headers dir: ${GENERATED_INCLUDE_DIR}")
