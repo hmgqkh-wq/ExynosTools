@@ -1,92 +1,88 @@
-cmake_minimum_required(VERSION 3.16)
-project(ExynosTools LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.15)
 
-# Build type defaults
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-endif()
+project(ExynosTools LANGUAGES C)
 
-# Useful compiler flags (adjust as needed)
-if(CMAKE_C_COMPILER_ID MATCHES "Clang" OR CMAKE_C_COMPILER_ID MATCHES "GNU")
-  add_compile_options(-Wall -Wextra -Wno-unused-parameter)
-endif()
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Make sure we have an out-of-source build
-if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
-  message(WARNING "In-source builds are discouraged. Consider using a build/ directory.")
-endif()
+option(XCLIPSE_ENABLE_ANDROID_LOG "Enable Android logging" OFF)
+option(ENABLE_RAY_TRACING "Enable ray tracing support for Xclipse 940" ON)
 
-# ------------------------------------------------------------------
-# Shader generation
-# Include your generator early so headers are available before targets
-# This file is OPTIONAL to avoid hard error if it isn't present locally
-if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/generate_shader_headers.cmake")
-  include("${CMAKE_SOURCE_DIR}/cmake/generate_shader_headers.cmake")
-else()
-  message(STATUS "cmake/generate_shader_headers.cmake not found; continuing (CI or manual generation expected).")
-endif()
+# Find required tools and libraries
+find_program(GLSLC_EXECUTABLE glslc REQUIRED)
+find_package(Vulkan REQUIRED)
+find_library(SQUISH_LIB squish)  # Optional CPU fallback
 
-# Ensure generated headers in source include/ or build tree are found by compiler
-# Prefer source include/ (so committed headers are used if present).
-include_directories(
-  "${CMAKE_SOURCE_DIR}/include"
-  "${CMAKE_BINARY_DIR}/generated_shaders"
+# Shader compilation function
+function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
+    get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
+    set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
+    add_custom_command(
+        OUTPUT ${SPIRV_OUTPUT}
+        COMMAND ${GLSLC_EXECUTABLE} -I${CMAKE_SOURCE_DIR}/assets/shaders/src ${SHADER_SOURCE} -o ${SPIRV_OUTPUT}
+        DEPENDS ${SHADER_SOURCE} ${CMAKE_SOURCE_DIR}/assets/shaders/src/bc_common.glsl
+        COMMENT "Compiling ${SHADER_SOURCE} to SPIR-V"
+    )
+    add_custom_command(
+        OUTPUT ${HEADER_OUTPUT}
+        COMMAND ${CMAKE_COMMAND} -D SPIRV_FILE=${SPIRV_OUTPUT} -D HEADER_FILE=${HEADER_OUTPUT} -D VAR_NAME=${VARIABLE_NAME} -P ${CMAKE_CURRENT_SOURCE_DIR}/generate_shader_header.cmake
+        DEPENDS ${SPIRV_OUTPUT}
+        COMMENT "Generating C header from ${SPIRV_OUTPUT}"
+    )
+endfunction()
+
+# Generate shader headers for all formats
+set(SHADER_HEADERS_DIR "${CMAKE_BINARY_DIR}/generated/shaders")
+file(MAKE_DIRECTORY ${SHADER_HEADERS_DIR})
+
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc1.comp" "${SHADER_HEADERS_DIR}/bc1_shader.h" "bc1_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc3.comp" "${SHADER_HEADERS_DIR}/bc3_shader.h" "bc3_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc4.comp" "${SHADER_HEADERS_DIR}/bc4_shader.h" "bc4_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc5.comp" "${SHADER_HEADERS_DIR}/bc5_shader.h" "bc5_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc6h.comp" "${SHADER_HEADERS_DIR}/bc6h_shader.h" "bc6h_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc7.comp" "${SHADER_HEADERS_DIR}/bc7_shader.h" "bc7_shader_spv")
+
+add_library(xeno_wrapper SHARED
+    src/xeno_wrapper.c
+    src/bc_emulate.c
+    src/features_patch.c
+    src/detect.c
+    src/perf_conf.c
+    src/logging.c
+    src/app_profile.c
+    src/hud.c
+    ${SHADER_HEADERS_DIR}/bc1_shader.h
+    ${SHADER_HEADERS_DIR}/bc3_shader.h
+    ${SHADER_HEADERS_DIR}/bc4_shader.h
+    ${SHADER_HEADERS_DIR}/bc5_shader.h
+    ${SHADER_HEADERS_DIR}/bc6h_shader.h
+    ${SHADER_HEADERS_DIR}/bc7_shader.h
 )
 
-# Provide a CACHE option so CI or users can disable generator if desired
-option(GENERATE_SHADERS "Run SPIR-V shader generation step" ON)
-if(GENERATE_SHADERS)
-  # If the generate_shader_headers.cmake defined a gen_shaders target, it was created above.
-  # If not, add a placeholder target so dependent targets can still add_dependencies safely.
-  if(NOT TARGET gen_shaders)
-    add_custom_target(gen_shaders)
-  endif()
-endif()
+target_compile_definitions(xeno_wrapper PRIVATE
+    $<$<BOOL:${XCLIPSE_ENABLE_ANDROID_LOG}>:XCLIPSE_ANDROID_LOG>
+    $<$<BOOL:${ENABLE_RAY_TRACING}>:VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME>
+)
 
-# ------------------------------------------------------------------
-# Project layout detection
-set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
-set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
+target_link_libraries(xeno_wrapper PRIVATE
+    dl
+    Threads::Threads
+    Vulkan::Vulkan
+    $<$<BOOL:${SQUISH_LIB}>:${SQUISH_LIB}>
+)
 
-# Collect source files if no src/CMakeLists.txt is present
-if(EXISTS "${SRC_DIR}/CMakeLists.txt")
-  add_subdirectory("${SRC_DIR}")
-else()
-  # Basic heuristic: gather .c and .cpp files under src/
-  file(GLOB_RECURSE EXYNOSTOOLS_SRCS "${SRC_DIR}/*.c" "${SRC_DIR}/*.cpp" "${SRC_DIR}/*.cc")
-  if(NOT EXYNOSTOOLS_SRCS)
-    message(WARNING "No source files found under ${SRC_DIR}. Add a subdirectory or populate src/ with sources.")
-  endif()
+target_include_directories(xeno_wrapper PRIVATE ${SHADER_HEADERS_DIR})
 
-  # Create the target (adjust name and properties as your project expects)
-  add_library(exynostools STATIC ${EXYNOSTOOLS_SRCS})
+set_target_properties(xeno_wrapper PROPERTIES
+    OUTPUT_NAME "xeno_wrapper"
+    PREFIX "lib"
+)
 
-  # Ensure shader generation happens before building the library
-  add_dependencies(exynostools gen_shaders)
+install(TARGETS xeno_wrapper
+    LIBRARY DESTINATION usr/lib
+)
 
-  # Public include dirs
-  target_include_directories(exynostools PUBLIC
-    "${INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/generated_shaders"
-  )
-
-  # Example compile options and definitions for Android cross builds; keep harmless if unused
-  if(ANDROID)
-    target_compile_definitions(exynostools PRIVATE ANDROID)
-  endif()
-
-  # Example: set C standard if needed
-  set_target_properties(exynostools PROPERTIES
-    C_STANDARD 11
-    C_STANDARD_REQUIRED ON
-  )
-endif()
-
-# ------------------------------------------------------------------
-# Install rules (optional, adjust as needed)
-install(DIRECTORY "${INCLUDE_DIR}/" DESTINATION include OPTIONAL)
-
-# Export useful status
-message(STATUS "CMake binary dir: ${CMAKE_BINARY_DIR}")
-message(STATUS "Include directories: ${INCLUDE_DIR}, ${CMAKE_BINARY_DIR}/generated_shaders")
-message(STATUS "Shader generation: ${GENERATE_SHADERS}")
+install(FILES usr/share/meta.json DESTINATION usr/share)
+install(FILES etc/exynostools/performance_mode.conf DESTINATION etc/exynostools)
+install(DIRECTORY etc/exynostools/profiles DESTINATION etc/exynostools)
