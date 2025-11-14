@@ -1,66 +1,44 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 #include "bc_common.glsl"
-layout(local_size_x = 64) in;
 
-// BC6H: simplified, GPU-friendly path (signed/unsigned endpoints, indices, basic partition)
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-float expand(uint v, uint bits, bool isSigned) {
-    return isSigned ? snormN(v, bits) : unormN(v, bits);
-}
+layout(set = 0, binding = 0) buffer InputBuffer {
+    uint data[];
+} inputBuffer;
 
-vec3 tone_map(vec3 hdr) {
-    return hdr / (hdr + vec3(1.0));
-}
-
-uint partitionForTexel(uint t) {
-    uint x = t & 3u;
-    return (x < 2u) ? 0u : 1u;
-}
+layout(set = 0, binding = 1, rgba16f) uniform image2D outputImage;  // HDR format for BC6H
 
 void main() {
-    uint bi = block_index();
-    uvec2 origin = block_origin(bi);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;
+    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 4;
 
-    uint w0 = bc_words[bi * 4u + 0u];
-    uint w1 = bc_words[bi * 4u + 1u];
-    uint w2 = bc_words[bi * 4u + 2u];
-    uint w3 = bc_words[bi * 4u + 3u];
+    uint mode = inputBuffer.data[blockIndex] & 0x1F;  // BC6H mode
 
-    bool isSigned   = ((w0 & 0x20u) != 0u);
-    uint partitions = ((w0 & 0x10u) != 0u) ? 2u : 1u;
-    uint idxBits    = 5u;
+    // Mode-specific decoding (reduce branches with if-else)
+    if (mode < 8) {
+        // Mode 0-7: Signed HDR
+        vec4 endpoints[4];
+        // Unroll endpoint extraction
+        endpoints[0] = unpackBC6HEndpoint(inputBuffer.data[blockIndex], 0);
+        endpoints[1] = unpackBC6HEndpoint(inputBuffer.data[blockIndex + 1], 1);
+        endpoints[2] = unpackBC6HEndpoint(inputBuffer.data[blockIndex + 2], 2);
+        endpoints[3] = unpackBC6HEndpoint(inputBuffer.data[blockIndex + 3], 3);
 
-    // Endpoint extraction (approximate mapping)
-    uint R0 = (w0 >>  5) & 1023u;
-    uint G0 = (w0 >> 15) & 1023u;
-    uint B0 = ((w0 >> 25) & 511u) | ((w1 & 7u) << 7);
+        half4 hEndpoints[4] = half4(endpoints[0]), half4(endpoints[1]), half4(endpoints[2]), half4(endpoints[3]);  // Half for math
 
-    uint R1 = (w1 >>  3) & 1023u;
-    uint G1 = (w1 >> 13) & 1023u;
-    uint B1 = ((w1 >> 23) & 511u) | ((w2 & 1u) << 9);
+        uint indices = inputBuffer.data[blockIndex + 4];
 
-    vec3 E0 = vec3(expand(R0, 10, isSigned),
-                   expand(G0, 10, isSigned),
-                   expand(B0, 11, isSigned));
-    vec3 E1 = vec3(expand(R1, 10, isSigned),
-                   expand(G1, 10, isSigned),
-                   expand(B1, 11, isSigned));
-
-    // Indices stream in two uints
-    uint idx_lo = w2;
-    uint idx_hi = w3;
-    uint maxIdx = (1u << idxBits) - 1u;
-
-    for (uint t = 0u; t < 16u; ++t) {
-        uint pos = t * idxBits;
-        uint idx = read4_64(idx_lo, idx_hi, pos) & maxIdx;
-        float w = float(idx) / float(maxIdx);
-
-        uint part = (partitions == 1u) ? 0u : partitionForTexel(t);
-        vec3 C = (part == 0u) ? mix(E0, E1, w) : mix(E1, E0, w);
-
-        vec3 LDR = tone_map(C);
-        uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), vec4(LDR, 1.0));
+        for (uint y = 0u; y < 4u; y++) {
+            for (uint x = 0u; x < 4u; x++) {
+                uint idx = (indices >> ((y * 4 + x) * 3)) & 0x7;
+                half4 color = hEndpoints[0] + (hEndpoints[1] - hEndpoints[0]) * (half(idx) / 7.0h);  // Linear interp
+                imageStore(outputImage, coord + ivec2(x, y), vec4(color));
+            }
+        }
+    } else {
+        // Mode 8-14: Unsigned HDR (similar unrolled logic)
+        // ... (implement similar to above, with unsigned unpacking)
     }
 }
