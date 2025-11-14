@@ -2,23 +2,15 @@
 #include "bc_common.glsl"
 layout(local_size_x_id = 0) in;
 
-// BC6H decodes HDR RGB from 16-byte blocks across multiple modes.
-// FPS-first strategy:
-// - Parse mode and partitions in a compact way
-// - Reconstruct endpoints once per block (signed/unsigned, pbits)
-// - Per-texel loop is straight-line with fixed index size
-// - Fast tone-map to RGBA8: hdr/(hdr+1), avoiding high-bandwidth HDR targets
-
 struct ModeMeta {
-    uint partitions;    // 1 or 2
+    uint partitions;
     bool isSigned;
     bool hasPBits;
-    uint epBitsR; uint epBitsG; uint epBitsB; // endpoint channel bit counts
-    uint idxBits;       // typically 4
+    uint epBitsR; uint epBitsG; uint epBitsB;
+    uint idxBits;
 };
 
 ModeMeta meta_from_header(uint b0) {
-    // Compact heuristic mapping covers common encodings
     ModeMeta m;
     m.partitions = ((b0 >> 6) & 1u) != 0u ? 2u : 1u;
     m.isSigned   = ((b0 >> 5) & 1u) != 0u;
@@ -37,7 +29,7 @@ uvec3 read_endpoint_triplet(uint b0, uint b1, uint b2, uint b3, ModeMeta m, uint
     if (whichEP == 0u) {
         uint R0 = (b0 >> 5) & ((1u << m.epBitsR) - 1u);
         uint G0 = (b0 >> 15) & ((1u << m.epBitsG) - 1u);
-        uint B0 = ((b0 >> 25) & ((1u << (min(7u, m.epBitsB))) - 1u)) | ((b1 & 0x7u) << 7);
+        uint B0 = ((b0 >> 25) & ((1u << min(7u, m.epBitsB)) - 1u)) | ((b1 & 0x7u) << 7);
         return uvec3(R0, G0, B0);
     } else {
         uint R1 = (b1 >> 3) & ((1u << m.epBitsR) - 1u);
@@ -49,7 +41,6 @@ uvec3 read_endpoint_triplet(uint b0, uint b1, uint b2, uint b3, ModeMeta m, uint
 
 vec3 apply_pbits(vec3 c, ModeMeta m) {
     if (!m.hasPBits) return c;
-    // Single-bit per channel refinement; applied once outside texel loop
     return clamp(c + vec3(1.0 / 1023.0, 1.0 / 1023.0, 1.0 / 2047.0), 0.0, 1.0);
 }
 
@@ -61,7 +52,6 @@ void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    // Load 16 bytes (4 dwords)
     uint b0 = bc_words[bi * 4u + 0u];
     uint b1 = bc_words[bi * 4u + 1u];
     uint b2 = bc_words[bi * 4u + 2u];
@@ -69,7 +59,6 @@ void main() {
 
     ModeMeta m = meta_from_header(b0);
 
-    // Endpoints (dominant single-partition path)
     uvec3 e0u = read_endpoint_triplet(b0, b1, b2, b3, m, 0u);
     uvec3 e1u = read_endpoint_triplet(b0, b1, b2, b3, m, 1u);
 
@@ -83,7 +72,6 @@ void main() {
     E0 = apply_pbits(E0, m);
     E1 = apply_pbits(E1, m);
 
-    // Indices: 16 texels, often 4-bit. Pack across b2|b3 for speed.
     uint64_t idx64 = uint64_t(b2) | (uint64_t(b3) << 32);
     uint maxIdx = (1u << m.idxBits) - 1u;
 
