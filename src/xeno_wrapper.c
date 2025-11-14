@@ -29,15 +29,6 @@ static void ensure_real_procs(void) {
         XENO_LOGE("xeno_wrapper: failed to resolve real vkGet*ProcAddr");
 }
 
-// Feature normalization: conservative promotions on properties/limits
-static void normalize_properties(VkPhysicalDeviceProperties2* p) {
-    if (!p) return;
-    VkPhysicalDeviceLimits* L = &p->properties.limits;
-    if (L->maxDescriptorSetStorageBuffers < 128) L->maxDescriptorSetStorageBuffers = 128;
-    if (L->maxComputeWorkGroupInvocations < 256) L->maxComputeWorkGroupInvocations = 256;
-    strncpy(p->properties.deviceName, "Xclipse-940 (Compat+)", VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 1);
-}
-
 uint32_t xeno_wrapper_get_caps(void) {
     return XENO_CAP_PIPELINE_CACHE_PERSIST |
            XENO_CAP_DESCRIPTOR_REUSE |
@@ -45,19 +36,19 @@ uint32_t xeno_wrapper_get_caps(void) {
            XENO_CAP_BC_DECODE_COMPUTE |
            XENO_CAP_SPECIALIZATION_CONSTANTS |
            XENO_CAP_ASYNC_PIPELINE_CREATION |
-           XENO_CAP_SPIRV_VALIDATION;
+           XENO_CAP_SPIRV_VALIDATION |
+           XENO_CAP_BINDLESS_DESCRIPTOR |
+           XENO_CAP_RAYTRACING_SCAFFOLD;
 }
 
-// Simple SPIR-V validation: check header magic and word alignment
 VkResult xeno_wrapper_validate_spirv(const uint32_t* words, uint32_t byte_len) {
     if (!words || (byte_len % 4) != 0) return VK_ERROR_FORMAT_NOT_SUPPORTED;
-    if (words[0] != 0x07230203) return VK_ERROR_FORMAT_NOT_SUPPORTED; // SPIR-V magic
+    if (words[0] != 0x07230203) return VK_ERROR_FORMAT_NOT_SUPPORTED;
     return VK_SUCCESS;
 }
 
-// Pipeline cache persistence
 VkResult xeno_wrapper_save_pipeline_cache(VkDevice device, VkPipelineCache cache, const char* path) {
-    PFN_vkGetPipelineCacheData getData = (PFN_vkGetPipelineCacheData) real_vkGetDeviceProcAddr(device, "vkGetPipelineCacheData");
+    PFN_vkGetPipelineCacheData getData = (PFN_vkGetPipelineCacheData) vkGetDeviceProcAddr(device, "vkGetPipelineCacheData");
     if (!getData || !path) return VK_ERROR_INITIALIZATION_FAILED;
     size_t size = 0;
     if (getData(device, cache, &size, NULL) != VK_SUCCESS || size == 0) return VK_ERROR_INITIALIZATION_FAILED;
@@ -67,10 +58,7 @@ VkResult xeno_wrapper_save_pipeline_cache(VkDevice device, VkPipelineCache cache
     if (r == VK_SUCCESS) {
         FILE* f = fopen(path, "wb");
         if (!f) r = VK_ERROR_INITIALIZATION_FAILED;
-        else {
-            fwrite(buf, 1, size, f);
-            fclose(f);
-        }
+        else { fwrite(buf, 1, size, f); fclose(f); }
     }
     free(buf);
     return r;
@@ -91,7 +79,6 @@ VkResult xeno_wrapper_load_pipeline_cache(VkDevice device, const char* path, VkP
     return r;
 }
 
-// Intercepts (kept minimal here; bc_emulate uses device procs directly)
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     pthread_once(&g_init_once, ensure_real_procs);
     if (real_vkGetInstanceProcAddr) return real_vkGetInstanceProcAddr(instance, pName);
