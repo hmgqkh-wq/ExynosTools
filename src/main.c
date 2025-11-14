@@ -1,6 +1,5 @@
 // src/main.c
 // Minimal entrypoint to satisfy linker in CI builds.
-// Replace with your real main when integrating into the full runtime.
 
 #include <stdio.h>
 
