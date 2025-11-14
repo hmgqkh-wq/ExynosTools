@@ -96,3 +96,22 @@ echo "✅ Config: .conf format (unified system)"
 echo ""
 echo "Ready for Winlator Bionic installation!"
 
+#!/bin/bash
+
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+
+cmake --install build --prefix staging
+
+# Run tests
+build/bc_test
+
+# Package
+mkdir -p pkg/usr/lib pkg/usr/share pkg/etc/exynostools pkg/profiles/winlator pkg/assets/shaders/decode
+cp -v staging/usr/lib/libxeno_wrapper.so pkg/usr/lib/
+cp -v usr/share/meta.json pkg/usr/share/
+cp -v etc/exynostools/performance_mode.conf pkg/etc/exynostools/
+cp -v profiles/winlator/*.env pkg/profiles/winlator/
+cp -v build/shaders/*.spv pkg/assets/shaders/decode/
+
+tar --zstd -cvf exynostools-android-arm64.tar.zst -C pkg .
