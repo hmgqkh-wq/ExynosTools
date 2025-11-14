@@ -1,9 +1,51 @@
 #version 450
 #include "bc_common.glsl"
-
 layout(local_size_x_id = 0) in;
 
+// BC1 (DXT1) decode: 8 bytes per block (2 color endpoints + 16 2-bit indices)
+vec3 rgb565_to_rgb(uint c) {
+    float r = u5_to_float(u5(c, 11));
+    float g = u6_to_float(u6(c, 5));
+    float b = u5_to_float(u5(c, 0));
+    return vec3(r, g, b);
+}
+
 void main() {
-    ivec2 p = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
-    write_pixel(p);
+    // Each invocation decodes one BC block (4x4 => write 16 pixels)
+    uint blockIndex = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * PC.groupsX;
+    uvec2 origin = block_origin(blockIndex);
+    // 8 bytes = 2 uint32 words low/high for convenience
+    uint w0 = bc_words[blockIndex * 2u + 0u];
+    uint w1 = bc_words[blockIndex * 2u + 1u];
+
+    uint c0 = w0 & 0xffffu;
+    uint c1 = (w0 >> 16) & 0xffffu;
+    vec3 c0_rgb = rgb565_to_rgb(c0);
+    vec3 c1_rgb = rgb565_to_rgb(c1);
+
+    bool fourColor = c0 > c1;
+    vec3 palette[4];
+    palette[0] = c0_rgb;
+    palette[1] = c1_rgb;
+    if (fourColor) {
+        palette[2] = (2.0 * c0_rgb + c1_rgb) / 3.0;
+        palette[3] = (c0_rgb + 2.0 * c1_rgb) / 3.0;
+    } else {
+        palette[2] = (c0_rgb + c1_rgb) * 0.5;
+        palette[3] = vec3(0.0); // transparent
+    }
+
+    // 16 indices packed 2 bits each
+    uint idxBits0 = (w0 >> 32) & 0xffffffffu; // upper 32 if coming as 64; here use w1
+    uint idxBits  = w1;
+
+    for (uint py = 0u; py < 4u; ++py) {
+        for (uint px = 0u; px < 4u; ++px) {
+            uint bitPos = (py * 4u + px) * 2u;
+            uint idx = (idxBits >> bitPos) & 3u;
+            vec3 rgb = palette[idx];
+            float a = (fourColor || idx != 3u) ? 1.0 : 0.0;
+            store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
+        }
+    }
 }
