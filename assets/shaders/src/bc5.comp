@@ -1,6 +1,6 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x_id = 0) in;
+layout(local_size_x = WG_SIZE) in;
 
 float chan_interp(uint c0, uint c1, uint idx, bool isSigned) {
     float C0 = isSigned ? snormN(c0, 8) : float(c0) / 255.0;
