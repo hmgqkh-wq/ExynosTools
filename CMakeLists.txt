@@ -1,37 +1,40 @@
 cmake_minimum_required(VERSION 3.18)
 project(ExynosTools LANGUAGES C CXX)
 
+# C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Output dirs
+# Output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # Include paths
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_BINARY_DIR}/shaders
     ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/src
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders
 )
 
-# Source aggregation
+# Source files
 file(GLOB_RECURSE EXYNOSTOOLS_SOURCES
     src/*.cpp
     src/*.c
 )
 
+# Executable
 add_executable(exynostools ${EXYNOSTOOLS_SOURCES})
 
 # Vulkan
 find_package(Vulkan REQUIRED)
 target_link_libraries(exynostools PRIVATE Vulkan::Vulkan)
 
-# Shader compile
+# Shader source and output directories
 set(SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/src)
 set(SHADER_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_OUTPUT_DIR})
 
+# Shader files to compile (.comp only)
 set(SHADER_SOURCES
     bc1.comp
     bc2.comp
@@ -42,6 +45,7 @@ set(SHADER_SOURCES
     bc7.comp
 )
 
+# Compile each shader to SPIR-V
 foreach(SHADER_FILE ${SHADER_SOURCES})
     set(INPUT_FILE ${SHADER_SRC_DIR}/${SHADER_FILE})
     get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
@@ -59,6 +63,7 @@ foreach(SHADER_FILE ${SHADER_SOURCES})
     list(APPEND COMPILED_SHADERS ${OUTPUT_FILE})
 endforeach()
 
+# Shader build target
 add_custom_target(generated_shaders ALL DEPENDS ${COMPILED_SHADERS})
 add_dependencies(exynostools generated_shaders)
 
@@ -81,6 +86,7 @@ function(spv_to_header SPV_FILE HEADER_FILE SYMBOL_NAME)
     set(GENERATED_HEADERS ${GENERATED_HEADERS} ${HEADER_FILE} PARENT_SCOPE)
 endfunction()
 
+# Generate headers for each shader
 set(SHADER_NAMES bc1 bc2 bc3 bc4 bc5 bc6h bc7)
 
 foreach(NAME ${SHADER_NAMES})
@@ -90,10 +96,13 @@ foreach(NAME ${SHADER_NAMES})
     spv_to_header(${SPV} ${HDR} ${SYM})
 endforeach()
 
+# Header build target
 add_custom_target(generated_shader_headers ALL DEPENDS ${GENERATED_HEADERS})
 add_dependencies(exynostools generated_shader_headers)
+
+# Include generated headers
 target_include_directories(exynostools PRIVATE ${SHADER_HEADER_DIR})
 
-# Optional install
+# Optional install step
 install(DIRECTORY ${SHADER_OUTPUT_DIR}/ DESTINATION shaders)
 install(TARGETS exynostools RUNTIME DESTINATION bin)
