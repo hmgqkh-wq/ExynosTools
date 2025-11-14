@@ -79,7 +79,7 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   endif()
 endfunction()
 
-# Shaders referenced by sources — add new names here if more headers are included
+# Shaders referenced by sources — add or remove names as your source uses them
 set(BC_SHADERS
   bc1
   bc3
@@ -94,20 +94,20 @@ set(GENERATED_HEADERS "")
 foreach(s IN LISTS BC_SHADERS)
   set(SRC "${CMAKE_SOURCE_DIR}/assets/shaders/src/${s}.comp")
   set(HDR "${SHADER_HEADERS_DIR}/${s}_shader.h")
-  # Uppercase variable name for array symbol (consistent, readable)
-  string(TOUPPER "${s}_SHADER_SPV" VARNAME)
+  # Use lowercase var name to match C sources (e.g., bc1_shader_spv)
+  set(VARNAME "${s}_shader_spv")
   compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME}")
   list(APPEND GENERATED_HEADERS "${HDR}")
 endforeach()
 
-# Build generated headers before everything else; make them part of ALL to avoid scheduling races
+# Build generated headers before everything else
 add_custom_target(generated_shaders ALL DEPENDS ${GENERATED_HEADERS})
 set_target_properties(generated_shaders PROPERTIES EXCLUDE_FROM_ALL FALSE)
 
-# Expose generated directories globally (matches CI flags like -I.../build-android/generated)
+# Expose generated include dirs (CI shows -I.../build-android/generated)
 include_directories(${GENERATED_DIR} ${SHADER_HEADERS_DIR})
 
-# Explicit source list to avoid glob surprises
+# Explicit source list to avoid globbing surprises
 set(SRC_FILES
   src/xeno_wrapper.c
   src/bc_emulate.c
@@ -125,10 +125,10 @@ add_library(xeno_wrapper SHARED
   ${GENERATED_HEADERS}
 )
 
-# Ensure headers are generated before compiling
+# Ensure headers are generated before compiling xeno_wrapper
 add_dependencies(xeno_wrapper generated_shaders)
 
-# Target include dirs (redundant with global include, but ensures propagation)
+# Target include dirs (redundant with global include, but explicit)
 target_include_directories(xeno_wrapper PRIVATE ${GENERATED_DIR} ${SHADER_HEADERS_DIR} ${CMAKE_SOURCE_DIR}/src)
 
 target_compile_definitions(xeno_wrapper PRIVATE $<$<BOOL:${XCLIPSE_ENABLE_ANDROID_LOG}>:XCLIPSE_ANDROID_LOG>)
