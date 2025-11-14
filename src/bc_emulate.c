@@ -54,7 +54,7 @@ static VkResult create_pipeline_layout(VkDevice device, VkDescriptorSetLayout de
     VkPushConstantRange pushConstantRange = {
         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR,
         .offset = 0,
-        .size = sizeof(uint32_t) * 6  // Added scale and layer params
+        .size = sizeof(uint32_t) * 6  // width, height, groupsX, reserved, wg_size, scaled_100
     };
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -123,15 +123,13 @@ static VkResult multi_threaded_dispatch(VkCommandBuffer cmd, VkPipeline pipeline
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants), pushConstants);
 
     for (uint32_t t = 0; t < thread_count; t++) {
-        // Simple partitioning; replace with your preferred tiling strategy
         vkCmdDispatch(cmd, groupsX / thread_count, groupsY / thread_count, 1);
     }
     return VK_SUCCESS;
 }
 
-// Minimal descriptor set allocation to satisfy binding; fill writes as needed by your shaders.
-// Note: VK_DESCRIPTOR_TYPE_STORAGE_IMAGE requires an image view; here we allocate the set without writes.
-// You can extend this to create/bind VkImageView and write both bindings properly.
+// Minimal descriptor set allocation helper.
+// To fully bind resources, add vkUpdateDescriptorSets writes for your buffer and image view.
 static VkResult allocate_descriptor_set(VkDevice device,
                                         VkDescriptorPool pool,
                                         VkDescriptorSetLayout layout,
@@ -146,7 +144,6 @@ static VkResult allocate_descriptor_set(VkDevice device,
     return vkAllocateDescriptorSets(device, &allocInfo, out_set);
 }
 
-// Context creation
 XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
     XenoBCContext* ctx = (XenoBCContext*)calloc(1, sizeof(XenoBCContext));
     if (!ctx) {
@@ -190,7 +187,7 @@ XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
     ctx->workgroup_size = get_optimal_workgroup_size(phys);
     for (int i = 0; i < XENO_BC_FORMAT_COUNT; i++) ctx->pipelines[i] = VK_NULL_HANDLE;
 
-    // Create pipelines for all formats
+    // Create pipelines for all formats (use uint32_t* to match generated headers)
     const uint32_t* shaders[XENO_BC_FORMAT_COUNT] = {
         bc1_shader_spv, bc3_shader_spv, bc4_shader_spv, bc5_shader_spv, bc6h_shader_spv, bc7_shader_spv
     };
@@ -208,7 +205,7 @@ XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
     }
 
     ctx->initialized = 1;
-    XENO_LOGI("bc_emulate: enhanced context created with optimizations for Xclipse 940");
+    XENO_LOGI("bc_emulate: enhanced context created with ray tracing scaffolding and optimizations for Xclipse 940");
     return ctx;
 
 cleanup:
@@ -240,7 +237,7 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd, XenoBCContext* ctx, VkBuffer 
         return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
 
-    // Allocate a minimal descriptor set to satisfy bindings (extend with writes to bind src_bc/dst_rgba as needed).
+    // Allocate a minimal descriptor set (extend with writes to bind src_bc/dst_rgba)
     VkDescriptorSet desc_set = VK_NULL_HANDLE;
     VkResult result = allocate_descriptor_set(ctx->device, ctx->descriptorPool, ctx->descriptorSetLayout, &desc_set);
     if (result != VK_SUCCESS || desc_set == VK_NULL_HANDLE) {
@@ -250,7 +247,6 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd, XenoBCContext* ctx, VkBuffer 
 
     float scale = get_performance_scale(ctx->physicalDevice);
 
-    // Pre-memory barrier for target image
     for (uint32_t mip = subres.baseMipLevel; mip < subres.baseMipLevel + subres.mipLevelCount; mip++) {
         for (uint32_t layer = subres.baseArrayLayer; layer < subres.baseArrayLayer + subres.arrayLayerCount; layer++) {
             VkImageMemoryBarrier preBarrier = {
@@ -280,7 +276,6 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd, XenoBCContext* ctx, VkBuffer 
                 if (result != VK_SUCCESS) return result;
             }
 
-            // Post barrier to readable layout
             VkImageMemoryBarrier postBarrier = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
@@ -301,7 +296,7 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd, XenoBCContext* ctx, VkBuffer 
         }
     }
 
-    XENO_LOGD("bc_emulate: decoded %dx%d texture (mips %u, layers %u) using format %d with scale %.2f",
+    XENO_LOGD("bc_emulate: decoded %dx%d texture (mip %u, layers %u) using format %d with scale %.2f",
               extent.width, extent.height, subres.mipLevelCount, subres.arrayLayerCount, format, scale);
     return VK_SUCCESS;
 }
