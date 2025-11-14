@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
+# cmake/generate_shader_headers.cmake
 # Centralized shader generation target that invokes scripts/generate_spv_headers.sh serially.
-
+# Guarded so including this file multiple times won't error (avoids duplicate gen_shaders).
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_program(PYTHON3_EXECUTABLE python3)
 
@@ -9,6 +10,12 @@ if(NOT GLSLANG_VALIDATOR)
 endif()
 if(NOT PYTHON3_EXECUTABLE)
   message(FATAL_ERROR "python3 not found. Install Python 3.")
+endif()
+
+# If the target already exists, do nothing (safe re-include)
+if(TARGET gen_shaders)
+  message(STATUS "gen_shaders target already defined; skipping duplicate creation")
+  return()
 endif()
 
 set(SHADER_SCRIPT "${CMAKE_SOURCE_DIR}/scripts/generate_spv_headers.sh")
@@ -27,6 +34,7 @@ add_custom_target(gen_shaders
   VERBATIM
 )
 
+# Ensure common targets wait for generated headers; adapt names to your project
 foreach(tgt IN ITEMS exynostools xeno_wrapper)
   if(TARGET ${tgt})
     add_dependencies(${tgt} gen_shaders)
@@ -36,10 +44,3 @@ endforeach()
 include_directories("${GENERATED_INCLUDE_DIR}")
 message(STATUS "Using centralized shader generator: ${SHADER_SCRIPT}")
 message(STATUS "Generated headers dir: ${GENERATED_INCLUDE_DIR}")
-add_custom_target(gen_shaders
-  COMMAND ${CMAKE_COMMAND} -E echo "Running centralized shader generator script"
-  COMMAND ${CMAKE_COMMAND} -E env bash "${CMAKE_SOURCE_DIR}/scripts/generate_spv_headers.sh"
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  COMMENT "Generate SPIR-V and C headers for shaders (serial)"
-  VERBATIM
-)
