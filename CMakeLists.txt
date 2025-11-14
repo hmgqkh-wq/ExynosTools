@@ -29,7 +29,8 @@ set(SHADER_HEADERS_DIR "${GENERATED_DIR}/shaders")
 file(MAKE_DIRECTORY ${SHADER_HEADERS_DIR})
 
 # Helper: compile shader -> SPIR-V -> C header, or emit fallback header
-function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
+function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWER)
+  # VARIABLE_NAME_LOWER must be lowercase and will be used for both array and _len symbol
   get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
   set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
   file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
@@ -46,7 +47,11 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
       )
       add_custom_command(
         OUTPUT ${HEADER_OUTPUT}
-        COMMAND ${CMAKE_COMMAND} -DSPIRV_FILE=${SPIRV_OUTPUT} -DHEADER_FILE=${HEADER_OUTPUT} -DVAR_NAME=${VARIABLE_NAME} -P ${GEN_HEADER_SCRIPT}
+        COMMAND ${CMAKE_COMMAND}
+                -DSPIRV_FILE=${SPIRV_OUTPUT}
+                -DHEADER_FILE=${HEADER_OUTPUT}
+                -DVAR_NAME=${VARIABLE_NAME_LOWER}
+                -P ${GEN_HEADER_SCRIPT}
         DEPENDS ${SPIRV_OUTPUT} ${GEN_HEADER_SCRIPT}
         COMMENT "Generating C header ${HEADER_OUTPUT} from ${SPIRV_OUTPUT}"
         VERBATIM
@@ -58,7 +63,11 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
       add_custom_command(
         OUTPUT ${HEADER_OUTPUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADERS_DIR}
-        COMMAND ${CMAKE_COMMAND} -DSPIRV_FILE=__MISSING__ -DHEADER_FILE=${HEADER_OUTPUT} -DVAR_NAME=${VARIABLE_NAME} -P ${GEN_HEADER_SCRIPT}
+        COMMAND ${CMAKE_COMMAND}
+                -DSPIRV_FILE=__MISSING__
+                -DHEADER_FILE=${HEADER_OUTPUT}
+                -DVAR_NAME=${VARIABLE_NAME_LOWER}
+                -P ${GEN_HEADER_SCRIPT}
         DEPENDS ${GEN_HEADER_SCRIPT}
         COMMENT "Generating fallback header ${HEADER_OUTPUT} (glslc missing)"
         VERBATIM
@@ -71,7 +80,11 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
     add_custom_command(
       OUTPUT ${HEADER_OUTPUT}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADERS_DIR}
-      COMMAND ${CMAKE_COMMAND} -DSPIRV_FILE=__MISSING__ -DHEADER_FILE=${HEADER_OUTPUT} -DVAR_NAME=${VARIABLE_NAME} -P ${GEN_HEADER_SCRIPT}
+      COMMAND ${CMAKE_COMMAND}
+              -DSPIRV_FILE=__MISSING__
+              -DHEADER_FILE=${HEADER_OUTPUT}
+              -DVAR_NAME=${VARIABLE_NAME_LOWER}
+              -P ${GEN_HEADER_SCRIPT}
       DEPENDS ${GEN_HEADER_SCRIPT}
       COMMENT "Generating fallback header ${HEADER_OUTPUT} (shader source missing)"
       VERBATIM
@@ -79,7 +92,7 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   endif()
 endfunction()
 
-# Shaders referenced by sources — add or remove names as your source uses them
+# Shaders referenced by sources — keep these in sync with includes in bc_emulate.c
 set(BC_SHADERS
   bc1
   bc3
@@ -94,9 +107,8 @@ set(GENERATED_HEADERS "")
 foreach(s IN LISTS BC_SHADERS)
   set(SRC "${CMAKE_SOURCE_DIR}/assets/shaders/src/${s}.comp")
   set(HDR "${SHADER_HEADERS_DIR}/${s}_shader.h")
-  # Use lowercase var name to match C sources (e.g., bc1_shader_spv)
-  set(VARNAME "${s}_shader_spv")
-  compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME}")
+  set(VARNAME_LOWER "${s}_shader_spv")  # exact lowercase symbol expected by C sources
+  compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME_LOWER}")
   list(APPEND GENERATED_HEADERS "${HDR}")
 endforeach()
 
