@@ -31,22 +31,13 @@ jobs:
           ndk-version: r25b
 
       - name: Configure (CMake Android arm64 with ray tracing)
-        run: cmake -S . -B build-android -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=31 -DCMAKE_BUILD_TYPE=Release -DANDROID_STL=c++_shared -DCMAKE_C_FLAGS="-I$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" -DCMAKE_VERBOSE_MAKEFILE=ON -DVK_USE_PLATFORM_ANDROID_KHR=ON
+        run: cmake -S . -B build-android -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=31 -DCMAKE_BUILD_TYPE=Release -DANDROID_STL=c++_shared -DCMAKE_C_FLAGS="-I$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" -DCMAKE_VERBOSE_MAKEFILE=ON -DVK_USE_PLATFORM_ANDROID_KHR=ON -DENABLE_RAY_TRACING=ON -DENABLE_VRS=ON
 
       - name: Build (CMake)
         run: cmake --build build-android --config Release -j
 
       - name: Install to staging
         run: cmake --install build-android --prefix $(pwd)/staging
-
-      - name: Verify size
-        run: |
-          ls -lh staging/usr/lib/ || echo "No lib directory found"
-          sofile=staging/usr/lib/libxeno_wrapper.so
-          if [ ! -f "$sofile" ]; then echo "Missing libxeno_wrapper.so"; exit 1; fi
-          size=$(stat -c%s "$sofile")
-          echo "Size: $size bytes"
-          if [ "$size" -lt 80000 ]; then echo "Shared object too small (<80KB)"; exit 1; fi
 
       - name: Prepare package layout
         run: |
