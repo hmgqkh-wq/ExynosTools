@@ -1,69 +1,64 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 #include "bc_common.glsl"
-layout(local_size_x = 64) in;
 
-// BC3: BC1 color + BC4 alpha block (endpoints + 3-bit indices)
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;  // Optimized for RDNA3
 
-float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
-float expand6(uint v) { return float((v << 2) | (v >> 4)) / 255.0; }
-vec3 color565(uint c) {
-    uint r5 = (c >> 11) & 31u;
-    uint g6 = (c >> 5) & 63u;
-    uint b5 = c & 31u;
-    return vec3(expand5(r5), expand6(g6), expand5(b5));
-}
+layout(set = 0, binding = 0) buffer InputBuffer {
+    uint data[];
+} inputBuffer;
 
-float alpha_interp(uint a0, uint a1, uint idx) {
-    float A0 = float(a0) / 255.0;
-    float A1 = float(a1) / 255.0;
-    if (a0 > a1) {
-        if (idx == 0u) return A0;
-        if (idx == 1u) return A1;
-        return ((8.0 - float(idx)) * A0 + (float(idx) - 1.0) * A1) / 7.0;
-    } else {
-        if (idx == 0u) return A0;
-        if (idx == 1u) return A1;
-        if (idx == 6u) return 0.0;
-        if (idx == 7u) return 1.0;
-        return ((6.0 - float(idx)) * A0 + (float(idx) - 1.0) * A1) / 5.0;
-    }
-}
+layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
 
 void main() {
-    uint bi = block_index();
-    uvec2 origin = block_origin(bi);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;
+    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 4;  // 16 bytes per block
 
-    // Alpha block (BC4 style): a0,a1 (8-bit), then 48-bit indices
-    uint a0a1 = bc_words[bi * 4u + 0u];
-    uint ai_lo = bc_words[bi * 4u + 1u];
-    uint ai_hi16 = bc_words[bi * 4u + 2u] & 0xFFFFu;
+    // Color part (BC1)
+    uint lowColor = inputBuffer.data[blockIndex + 2];
+    uint highColor = inputBuffer.data[blockIndex + 3];
 
-    // Color block (BC1): endpoints/indices
-    uint w0 = bc_words[bi * 4u + 3u - 1u]; // reuse a0a1 upper for endpoints if packed adjacently
-    uint w1 = bc_words[bi * 4u + 3u];
+    vec4 color0 = unpackColor(lowColor);
+    vec4 color1 = unpackColor(highColor);
 
-    uint c0 = w0 & 0xFFFFu;
-    uint c1 = (w0 >> 16) & 0xFFFFu;
+    half4 hcolor0 = half4(color0.rgb, 1.0h);  // Half for RGB
+    half4 hcolor1 = half4(color1.rgb, 1.0h);
 
-    vec3 C0 = color565(c0);
-    vec3 C1 = color565(c1);
+    half4 colors[4];
+    colors[0] = hcolor0;
+    colors[1] = hcolor1;
+    colors[2] = hcolor0 * (2.0h / 3.0h) + hcolor1 * (1.0h / 3.0h);
+    colors[3] = hcolor0 * (1.0h / 3.0h) + hcolor1 * (2.0h / 3.0h);
 
-    vec3 P[4];
-    P[0] = C0; P[1] = C1;
-    if (c0 > c1) { P[2] = (2.0 * C0 + C1) / 3.0; P[3] = (C0 + 2.0 * C1) / 3.0; }
-    else { P[2] = (C0 + C1) / 2.0; P[3] = vec3(0.0); }
+    uint colorIndices = inputBuffer.data[blockIndex + 4];
 
-    uint a0 = a0a1 & 0xFFu;
-    uint a1 = (a0a1 >> 8) & 0xFFu;
+    // Alpha part
+    uint alphaLow = inputBuffer.data[blockIndex];
+    uint alphaHigh = inputBuffer.data[blockIndex + 1];
 
-    for (uint t = 0u; t < 16u; ++t) {
-        uint cidx = read2_32(w1, t * 2u);
-        vec3 rgb = P[cidx];
+    float a0 = unpackAlpha(alphaLow);
+    float a1 = unpackAlpha(alphaHigh);
 
-        uint aidx = read3_48(ai_lo, ai_hi16, t * 3u);
-        float a = alpha_interp(a0, a1, aidx);
+    float alphas[8];
+    alphas[0] = a0;
+    alphas[1] = a1;
+    // Unroll alpha interpolation
+    alphas[2] = (6.0 * a0 + 1.0 * a1) / 7.0;
+    alphas[3] = (5.0 * a0 + 2.0 * a1) / 7.0;
+    alphas[4] = (4.0 * a0 + 3.0 * a1) / 7.0;
+    alphas[5] = (3.0 * a0 + 4.0 * a1) / 7.0;
+    alphas[6] = (2.0 * a0 + 5.0 * a1) / 7.0;
+    alphas[7] = (1.0 * a0 + 6.0 * a1) / 7.0;
 
-        uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
+    uint alphaIndices = inputBuffer.data[blockIndex + 5];
+
+    // Unroll pixel write
+    for (uint y = 0u; y < 4u; y++) {
+        for (uint x = 0u; x < 4u; x++) {
+            uint cIdx = (colorIndices >> ((y * 4 + x) * 2)) & 0x3;
+            uint aIdx = (alphaIndices >> ((y * 4 + x) * 3)) & 0x7;
+            vec4 color = vec4(colors[cIdx].rgb, alphas[aIdx]);
+            imageStore(outputImage, coord + ivec2(x, y), color);
+        }
     }
 }
