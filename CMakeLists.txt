@@ -1,3 +1,4 @@
+include(cmake/enable_xeno_globals.cmake)
 cmake_minimum_required(VERSION 3.18)
 project(ExynosTools LANGUAGES C CXX)
 
