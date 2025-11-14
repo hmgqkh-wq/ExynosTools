@@ -1,6 +1,5 @@
 # cmake/generate_shader_headers.cmake
 # SPDX-License-Identifier: MIT
-# Safe include: creates gen_shaders target only once and exposes include dirs.
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_program(PYTHON3_EXECUTABLE python3)
 
@@ -12,7 +11,7 @@ if(NOT PYTHON3_EXECUTABLE)
 endif()
 
 if(TARGET gen_shaders)
-  message(STATUS "gen_shaders target already exists; skipping")
+  message(STATUS "gen_shaders target already defined; skipping duplicate creation")
   return()
 endif()
 
@@ -32,6 +31,10 @@ add_custom_target(gen_shaders
   VERBATIM
 )
 
-# Add include dirs for generated headers and project sources
-include_directories("${GENERATED_INCLUDE_DIR}" "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/include")
+include_directories(
+  "${GENERATED_INCLUDE_DIR}"
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_SOURCE_DIR}/include"
+)
+message(STATUS "Using shader generator script: ${SHADER_SCRIPT}")
 message(STATUS "Generated headers dir: ${GENERATED_INCLUDE_DIR}")
