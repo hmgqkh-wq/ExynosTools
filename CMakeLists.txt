@@ -23,15 +23,17 @@ if(NOT EXISTS "${GEN_HEADER_SCRIPT}")
   message(FATAL_ERROR "Missing required file: ${GEN_HEADER_SCRIPT}")
 endif()
 
-# Generated headers output dir
-set(SHADER_HEADERS_DIR "${CMAKE_BINARY_DIR}/generated/shaders")
+# Generated directories (align with CI logs)
+set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+set(SHADER_HEADERS_DIR "${GENERATED_DIR}/shaders")
 file(MAKE_DIRECTORY ${SHADER_HEADERS_DIR})
 
-# Helper: compile shader -> SPIRV -> C header, or emit fallback header
+# Helper: compile shader -> SPIR-V -> C header, or emit fallback header
 function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
   set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
   file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
+  file(MAKE_DIRECTORY "${SHADER_HEADERS_DIR}")
 
   if(EXISTS "${SHADER_SOURCE}")
     if(GLSLC_EXECUTABLE)
@@ -77,35 +79,35 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
   endif()
 endfunction()
 
-# List of BC shaders referenced by sources (add new names here if more headers are included)
+# Shaders referenced by sources — add new names here if more headers are included
 set(BC_SHADERS
   bc1
   bc3
   bc4
   bc5
   bc6h
+  bc7
 )
 
-# Request generate commands for each BC shader and collect header output paths
+# Request generation and collect header outputs
 set(GENERATED_HEADERS "")
 foreach(s IN LISTS BC_SHADERS)
   set(SRC "${CMAKE_SOURCE_DIR}/assets/shaders/src/${s}.comp")
   set(HDR "${SHADER_HEADERS_DIR}/${s}_shader.h")
-  string(TOUPPER "${s}_shader_spv" VARNAME)
+  # Uppercase variable name for array symbol (consistent, readable)
+  string(TOUPPER "${s}_SHADER_SPV" VARNAME)
   compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME}")
   list(APPEND GENERATED_HEADERS "${HDR}")
 endforeach()
 
-# Add an explicit custom target that depends on all generated headers and make it part of the build.
+# Build generated headers before everything else; make them part of ALL to avoid scheduling races
 add_custom_target(generated_shaders ALL DEPENDS ${GENERATED_HEADERS})
-set_target_properties(generated_shaders PROPERTIES
-  EXCLUDE_FROM_ALL FALSE
-)
+set_target_properties(generated_shaders PROPERTIES EXCLUDE_FROM_ALL FALSE)
 
-# Make generated headers visible globally early so the compiler can find includes during parallel builds.
-include_directories(${SHADER_HEADERS_DIR})
+# Expose generated directories globally (matches CI flags like -I.../build-android/generated)
+include_directories(${GENERATED_DIR} ${SHADER_HEADERS_DIR})
 
-# Explicit source list to avoid globbing surprises
+# Explicit source list to avoid glob surprises
 set(SRC_FILES
   src/xeno_wrapper.c
   src/bc_emulate.c
@@ -117,17 +119,17 @@ set(SRC_FILES
   src/hud.c
 )
 
-# Create the library target and include generated headers so CMake tracks them.
+# Create library target and include generated headers so CMake tracks byproducts
 add_library(xeno_wrapper SHARED
   ${SRC_FILES}
   ${GENERATED_HEADERS}
 )
 
-# Ensure headers are generated before compiling xeno_wrapper
+# Ensure headers are generated before compiling
 add_dependencies(xeno_wrapper generated_shaders)
 
-# Compiler include path for the target as well
-target_include_directories(xeno_wrapper PRIVATE ${SHADER_HEADERS_DIR} ${CMAKE_SOURCE_DIR}/src)
+# Target include dirs (redundant with global include, but ensures propagation)
+target_include_directories(xeno_wrapper PRIVATE ${GENERATED_DIR} ${SHADER_HEADERS_DIR} ${CMAKE_SOURCE_DIR}/src)
 
 target_compile_definitions(xeno_wrapper PRIVATE $<$<BOOL:${XCLIPSE_ENABLE_ANDROID_LOG}>:XCLIPSE_ANDROID_LOG>)
 if(BUILD_WITH_THREAD_SANITIZER)
