@@ -2,97 +2,89 @@
 #include "bc_common.glsl"
 layout(local_size_x_id = 0) in;
 
-// BC7 supports 8 modes with different endpoint quantizations, p-bits, partitions, alpha.
-// FPS-first strategy:
-// - Parse mode compactly (leading ones heuristic)
-// - Reconstruct endpoints once per block
-// - Per-texel loop uses fixed index width per mode, straight-line arithmetic
-// - Partitions handled by computing both endpoint pairs and selecting via mask (no branches in inner loop)
+// BC7 has multiple modes; we simplify by handling the most common RGB modes.
+// This shader decodes endpoints and interpolates colors per pixel.
 
 struct ModeMeta {
-    uint indexBits;   // per-texel index bits
-    uint chanBits;    // base bits per color channel
+    uint indexBits;
+    uint chanBits;
     bool pBits;
-    uint partitions;  // 1 or 2
-    bool hasAlpha;    // modes with alpha
+    uint partitions;
+    bool hasAlpha;
 };
 
+// Simplified mode metadata (real BC7 has 8 modes; here we cover RGB + alpha)
 ModeMeta meta_from_header(uint b0) {
-    // Leading 1s then a 0 define mode; compact approximation that maps well in practice.
-    uint mode = 0u;
-    if ((b0 & 1u) == 0u) mode = 0u;
-    else if ((b0 & 3u) == 1u) mode = 1u;
-    else if ((b0 & 7u) == 3u) mode = 2u;
-    else if ((b0 & 15u) == 7u) mode = 3u;
-    else if ((b0 & 31u) == 15u) mode = 4u;
-    else if ((b0 & 63u) == 31u) mode = 5u;
-    else if ((b0 & 127u) == 63u) mode = 6u;
-    else mode = 7u;
-
     ModeMeta m;
-    m.indexBits = 4u; m.chanBits = 7u; m.pBits = true; m.partitions = 1u; m.hasAlpha = false;
-    if (mode == 0u) { m.indexBits = 3u; m.chanBits = 5u; m.pBits = true; }
-    if (mode == 1u) { m.indexBits = 2u; m.chanBits = 6u; m.pBits = false; }
-    if (mode == 2u) { m.indexBits = 4u; m.chanBits = 7u; m.pBits = true; }
-    if (mode == 3u) { m.indexBits = 4u; m.chanBits = 7u; m.pBits = false; }
-    if (mode == 4u) { m.indexBits = 5u; m.chanBits = 8u; m.pBits = true; }
-    if (mode == 5u) { m.indexBits = 4u; m.chanBits = 6u; m.pBits = true; }
-    if (mode == 6u) { m.indexBits = 7u; m.chanBits = 8u; m.pBits = false; m.hasAlpha = true; }
-    if (mode == 7u) { m.indexBits = 4u; m.chanBits = 7u; m.pBits = true; m.partitions = 2u; }
+    uint mode = 0u;
+    // Mode detection: lowest set bit in first byte
+    for (uint i = 0u; i < 8u; ++i) {
+        if (((b0 >> i) & 1u) != 0u) { mode = i; break; }
+    }
+
+    // Simplified mapping
+    if (mode == 0u) { // RGB, 3 bits index
+        m.indexBits = 3u; m.chanBits = 7u; m.pBits = true; m.partitions = 1u; m.hasAlpha = false;
+    } else if (mode == 1u) { // RGB, 2 partitions
+        m.indexBits = 3u; m.chanBits = 6u; m.pBits = true; m.partitions = 2u; m.hasAlpha = false;
+    } else if (mode == 6u) { // RGBA
+        m.indexBits = 4u; m.chanBits = 8u; m.pBits = false; m.partitions = 1u; m.hasAlpha = true;
+    } else { // fallback
+        m.indexBits = 3u; m.chanBits = 7u; m.pBits = true; m.partitions = 1u; m.hasAlpha = false;
+    }
     return m;
 }
 
-float expand(uint v, uint bits) { return unormN(v, bits); }
-
-uvec3 read_e0(uint b0, uint b1, ModeMeta m) {
-    uint R0 = getBits2x(b0, b1, 8u, m.chanBits);
-    uint G0 = getBits2x(b0, b1, 8u + m.chanBits, m.chanBits);
-    uint B0 = getBits2x(b0, b1, 8u + m.chanBits * 2u, m.chanBits);
-    return uvec3(R0, G0, B0);
-}
-uvec3 read_e1(uint b1, uint b2, ModeMeta m) {
-    uint R1 = getBits2x(b1, b2, 0u, m.chanBits);
-    uint G1 = getBits2x(b1, b2, m.chanBits, m.chanBits);
-    uint B1 = getBits2x(b1, b2, m.chanBits * 2u, m.chanBits);
-    return uvec3(R1, G1, B1);
+float expand_channel(uint v, uint bits) {
+    return unormN(v, bits);
 }
 
-vec3 apply_pbits(vec3 c, ModeMeta m) {
-    if (!m.pBits) return c;
-    return clamp(c + vec3(1.0 / float((1u << m.chanBits) - 1u)), 0.0, 1.0);
+vec4 read_endpoint(uint w0, uint w1, ModeMeta m, uint whichEP) {
+    // Simplified: assume endpoints packed in w0/w1
+    if (whichEP == 0u) {
+        uint R = (w0 >> 0) & ((1u << m.chanBits) - 1u);
+        uint G = (w0 >> m.chanBits) & ((1u << m.chanBits) - 1u);
+        uint B = (w1 >> 0) & ((1u << m.chanBits) - 1u);
+        uint A = m.hasAlpha ? ((w1 >> m.chanBits) & ((1u << m.chanBits) - 1u)) : (1u << m.chanBits) - 1u;
+        return vec4(expand_channel(R, m.chanBits),
+                    expand_channel(G, m.chanBits),
+                    expand_channel(B, m.chanBits),
+                    expand_channel(A, m.chanBits));
+    } else {
+        uint R = (w1 >> (m.chanBits * 2u)) & ((1u << m.chanBits) - 1u);
+        uint G = (w1 >> (m.chanBits * 3u)) & ((1u << m.chanBits) - 1u);
+        uint B = (w0 >> (m.chanBits * 2u)) & ((1u << m.chanBits) - 1u);
+        uint A = m.hasAlpha ? ((w0 >> (m.chanBits * 3u)) & ((1u << m.chanBits) - 1u)) : (1u << m.chanBits) - 1u;
+        return vec4(expand_channel(R, m.chanBits),
+                    expand_channel(G, m.chanBits),
+                    expand_channel(B, m.chanBits),
+                    expand_channel(A, m.chanBits));
+    }
 }
 
 void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    uint b0 = bc_words[bi * 4u + 0u];
-    uint b1 = bc_words[bi * 4u + 1u];
-    uint b2 = bc_words[bi * 4u + 2u];
-    uint b3 = bc_words[bi * 4u + 3u];
+    uint w0 = bc_words[bi * 4u + 0u];
+    uint w1 = bc_words[bi * 4u + 1u];
+    uint w2 = bc_words[bi * 4u + 2u];
+    uint w3 = bc_words[bi * 4u + 3u];
 
-    ModeMeta m = meta_from_header(b0);
+    ModeMeta m = meta_from_header(w0);
 
-    // Endpoints
-    uvec3 e0u = read_e0(b0, b1, m);
-    uvec3 e1u = read_e1(b1, b2, m);
+    vec4 E0 = read_endpoint(w0, w1, m, 0u);
+    vec4 E1 = read_endpoint(w2, w3, m, 1u);
 
-    vec3 E0 = vec3(expand(e0u.x, m.chanBits), expand(e0u.y, m.chanBits), expand(e0u.z, m.chanBits));
-    vec3 E1 = vec3(expand(e1u.x, m.chanBits), expand(e1u.y, m.chanBits), expand(e1u.z, m.chanBits));
-
-    E0 = apply_pbits(E0, m);
-    E1 = apply_pbits(E1, m);
-
-    // Indices: 16 texels, per-mode bit-size
-    uint64_t idx64 = uint64_t(b2) | (uint64_t(b3) << 32);
+    uint64_t idxBits = uint64_t(w2) | (uint64_t(w3) << 32);
     uint maxIdx = (1u << m.indexBits) - 1u;
 
     for (uint t = 0u; t < 16u; ++t) {
-        uint idx = uint((idx64 >> (t * m.indexBits)) & maxIdx);
+        uint idx = uint((idxBits >> (t * m.indexBits)) & maxIdx);
         float w = float(idx) / float(maxIdx);
-        vec3 rgb = mix(E0, E1, w);
+        vec4 rgba = mix(E0, E1, w);
 
         uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, 1.0));
+        store_px(ivec2(origin) + ivec2(px, py), rgba);
     }
 }
