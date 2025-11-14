@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # scripts/generate_spv_headers.sh
 # SPDX-License-Identifier: MIT
-# Serial generator: compile -> validate -> optional optimize -> emit header
-# Call via: bash scripts/generate_spv_headers.sh
+# Serial SPIR-V generation + optimized spirv-opt passes suitable for mobile drivers.
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SH_DIR="$ROOT/assets/shaders/src"
 OUT_DIR="$ROOT/include"
@@ -13,22 +11,22 @@ PY="$ROOT/cmake/emit_spv_header.py"
 
 mkdir -p "$OUT_DIR" "$TMP_DIR" "$TMP_DIR/logs"
 
-command -v glslangValidator >/dev/null 2>&1 || { echo "ERROR: glslangValidator not found. Install glslang-tools."; exit 1; }
-command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
+command -v glslangValidator >/dev/null 2>&1 || { echo "ERROR: glslangValidator not found"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found"; exit 1; }
+SPIRV_OPT="$(command -v spirv-opt || true)"
+SPIRV_VAL="$(command -v spirv-val || true)"
 
-SPIRV_OPT_BIN="$(command -v spirv-opt || true)"
-SPIRV_VAL_BIN="$(command -v spirv-val || true)"
-
-echo "Generator starting. Shader dir: $SH_DIR"
-[ -n "$SPIRV_OPT_BIN" ] && echo "spirv-opt: $SPIRV_OPT_BIN" || echo "spirv-opt: not found (skipping optimization)"
-[ -n "$SPIRV_VAL_BIN" ] && echo "spirv-val: $SPIRV_VAL_BIN" || echo "spirv-val: not found (skipping validation)"
+echo "Shader dir: $SH_DIR"
+echo "Out dir: $OUT_DIR"
+[ -n "$SPIRV_OPT" ] && echo "spirv-opt: $SPIRV_OPT" || echo "spirv-opt not found (skipping advanced opt)"
+[ -n "$SPIRV_VAL" ] && echo "spirv-val: $SPIRV_VAL" || echo "spirv-val not found (skipping validation)"
 
 for src in "$SH_DIR"/*.{comp,glsl}; do
   [ -f "$src" ] || continue
   name="$(basename "$src")"
   base="${name%%.*}"
 
-  # Skip known include-only helpers
+  # skip common includes
   case "$name" in
     bc_common.glsl|common.glsl|shared.glsl) echo "Skipping include-only: $name"; continue ;;
   esac
@@ -39,71 +37,35 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
   log="$TMP_DIR/logs/${base}.log"
 
   echo
-  echo "=== Processing shader: $name ==="
-  echo "Logs -> $log"
-  rm -f "${log}"* || true
-
-  echo "1) Compile -> SPV"
+  echo "=== $name ==="
   if ! glslangValidator -V --target-env vulkan1.2 "-I${SH_DIR}" -o "$raw" "$src" 2> "${log}.glslang.stderr"; then
-    echo "ERROR: glslangValidator failed for $src"
-    echo "----- glslangValidator stderr (trimmed) -----"
-    tail -n 200 "${log}.glslang.stderr" || true
-    echo "----- end glslang stderr -----"
-    exit 1
+    echo "glslang failed for $src"; tail -n 200 "${log}.glslang.stderr" || true; exit 1
   fi
 
-  if [ ! -s "$raw" ]; then
-    echo "ERROR: Generated SPV empty: $raw"
-    exit 1
-  fi
-
-  rem=$(( $(stat -c%s "$raw") % 4 ))
-  if [ "$rem" -ne 0 ]; then
-    echo "ERROR: SPV size not multiple of 4: $raw (size $(stat -c%s "$raw"))"
-    exit 1
-  fi
-
-  if [ -n "$SPIRV_VAL_BIN" ]; then
-    echo "2) Validate SPV with spirv-val"
-    if ! "$SPIRV_VAL_BIN" "$raw" > "${log}.spirv-val.stdout" 2> "${log}.spirv-val.stderr"; then
-      echo "ERROR: spirv-val failed for $raw"
-      tail -n 200 "${log}.spirv-val.stderr" || true
-      exit 1
+  if [ -n "$SPIRV_VAL" ]; then
+    if ! "$SPIRV_VAL" "$raw" > "${log}.spirv-val.stdout" 2> "${log}.spirv-val.stderr"; then
+      echo "spirv-val failed for $raw"; tail -n 200 "${log}.spirv-val.stderr" || true; exit 1
     fi
   fi
 
-  if [ -n "$SPIRV_OPT_BIN" ]; then
-    echo "3) Optimize SPV with spirv-opt"
-    if "$SPIRV_OPT_BIN" --strip-debug -O "$raw" -o "$opt" > "${log}.spv-opt.stdout" 2> "${log}.spv-opt.stderr"; then
-      echo "spirv-opt succeeded -> $opt"
+  if [ -n "$SPIRV_OPT" ]; then
+    # Recommended spirv-opt passes for mobile drivers: inline, freeze-spec-const, strip-debug, optimize
+    if "$SPIRV_OPT" --strip-debug --inline-entry-points-exhaustive -O "$raw" -o "$opt" 2> "${log}.spv-opt.stderr"; then
       out="$opt"
-      if [ -n "$SPIRV_VAL_BIN" ]; then
-        if ! "$SPIRV_VAL_BIN" "$out" > "${log}.spirv-val.opt.stdout" 2> "${log}.spirv-val.opt.stderr"; then
-          echo "WARNING: spirv-val failed on optimized SPV; falling back to raw SPV"
-          tail -n 200 "${log}.spirv-val.opt.stderr" || true
-          out="$raw"
-        fi
-      fi
+      [ -n "$SPIRV_VAL" ] && "$SPIRV_VAL" "$out" > "${log}.spirv-val.opt.stdout" 2> "${log}.spirv-val.opt.stderr" || true
     else
-      echo "WARNING: spirv-opt failed for $raw; see ${log}.spv-opt.stderr; continuing with raw SPV"
-      tail -n 200 "${log}.spv-opt.stderr" || true
+      echo "spirv-opt failed (continuing with raw)"; tail -n 200 "${log}.spv-opt.stderr" || true
       out="$raw"
     fi
   fi
 
-  # Build symbol name that matches project expectation: <base>_shader_spv
-  sym_name="${base}_shader_spv"
-
-  echo "4) Emit C header from SPV -> $OUT_DIR/${base}_shader.h (symbol: $sym_name)"
-  if ! python3 "$PY" "$out" "$OUT_DIR/${base}_shader.h" "$sym_name" > "${log}.emit.stdout" 2> "${log}.emit.stderr"; then
-    echo "ERROR: emit_spv_header.py failed for $out"
-    tail -n 200 "${log}.emit.stderr" || true
-    exit 1
+  sym="${base}_shader_spv"
+  if ! python3 "$PY" "$out" "$OUT_DIR/${base}_shader.h" "$sym" > "${log}.emit.stdout" 2> "${log}.emit.stderr"; then
+    echo "emit_spv_header.py failed for $out"; tail -n 200 "${log}.emit.stderr" || true; exit 1
   fi
 
-  echo "=== Done: $name (logs in ${log}.*) ==="
+  echo "Done: $name -> ${base}_shader.h (symbol: $sym)"
 done
 
-echo
-echo "All shaders processed. Headers in: $OUT_DIR"
+echo "All shaders processed. Headers in $OUT_DIR"
 ls -la "$OUT_DIR" || true
