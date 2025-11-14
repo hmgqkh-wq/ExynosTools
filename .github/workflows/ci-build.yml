@@ -1,4 +1,4 @@
-name: CI Build — Vulkan shaders and native build (serial shader generation)
+name: CI Build — Vulkan shaders and native build (serial generator)
 
 on:
   push:
@@ -24,12 +24,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y build-essential cmake ninja-build glslang-tools spirv-tools python3 python3-venv
-
-    - name: Ensure scripts are runnable (no-op if already executable)
-      run: |
-        chmod +x scripts/generate_spv_headers.sh || true
-        chmod +x cmake/emit_spv_header.py || true
+        sudo apt-get install -y build-essential cmake ninja-build glslang-tools spirv-tools python3
 
     - name: Generate SPIR-V headers (serial, bash)
       run: |
@@ -51,15 +46,6 @@ jobs:
       run: |
         cmake --build build -- -j$(nproc)
 
-    - name: Run tests (optional)
-      if: always()
-      run: |
-        if [ -f build/run-tests.sh ]; then
-          bash build/run-tests.sh || true
-        else
-          echo "No tests to run"
-        fi
-
     - name: Archive build artifacts
       if: always()
       uses: actions/upload-artifact@v4
@@ -67,7 +53,7 @@ jobs:
         name: exynostools-build
         path: build/
 
-    - name: Upload generated headers separately
+    - name: Upload generated headers
       if: always()
       uses: actions/upload-artifact@v4
       with:
