@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Centralized shader generation target that invokes scripts/generate_spv_headers.sh serially.
+
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_program(PYTHON3_EXECUTABLE python3)
 
@@ -26,7 +27,6 @@ add_custom_target(gen_shaders
   VERBATIM
 )
 
-# Ensure main targets wait for generated headers
 foreach(tgt IN ITEMS exynostools xeno_wrapper)
   if(TARGET ${tgt})
     add_dependencies(${tgt} gen_shaders)
