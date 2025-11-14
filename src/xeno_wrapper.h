@@ -9,7 +9,7 @@ extern "C" {
 #include <vulkan/vulkan.h>
 
 #define XENO_WRAPPER_VERSION_MAJOR 1
-#define XENO_WRAPPER_VERSION_MINOR 1
+#define XENO_WRAPPER_VERSION_MINOR 3
 #define XENO_WRAPPER_VERSION_PATCH 0
 
 typedef enum XenoWrapperCaps {
@@ -19,7 +19,9 @@ typedef enum XenoWrapperCaps {
     XENO_CAP_BC_DECODE_COMPUTE        = 1u << 3,
     XENO_CAP_SPECIALIZATION_CONSTANTS = 1u << 4,
     XENO_CAP_ASYNC_PIPELINE_CREATION  = 1u << 5,
-    XENO_CAP_SPIRV_VALIDATION         = 1u << 6
+    XENO_CAP_SPIRV_VALIDATION         = 1u << 6,
+    XENO_CAP_BINDLESS_DESCRIPTOR      = 1u << 7,
+    XENO_CAP_RAYTRACING_SCAFFOLD      = 1u << 8
 } XenoWrapperCaps;
 
 uint32_t xeno_wrapper_get_caps(void);
