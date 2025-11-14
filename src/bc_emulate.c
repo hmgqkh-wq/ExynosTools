@@ -404,7 +404,7 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
         }
     };
 
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMpute_SHADER_BIT, 
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &postBarrier);
 
     // Clean up image view (descriptor set will be freed when pool is reset)
