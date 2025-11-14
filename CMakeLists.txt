@@ -30,7 +30,6 @@ file(MAKE_DIRECTORY ${SHADER_HEADERS_DIR})
 
 # Helper: compile shader -> SPIR-V -> C header, or emit fallback header
 function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWER)
-  # VARIABLE_NAME_LOWER must be lowercase and will be used for both array and _len symbol
   get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
   set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
   file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
@@ -107,7 +106,7 @@ set(GENERATED_HEADERS "")
 foreach(s IN LISTS BC_SHADERS)
   set(SRC "${CMAKE_SOURCE_DIR}/assets/shaders/src/${s}.comp")
   set(HDR "${SHADER_HEADERS_DIR}/${s}_shader.h")
-  set(VARNAME_LOWER "${s}_shader_spv")  # exact lowercase symbol expected by C sources
+  set(VARNAME_LOWER "${s}_shader_spv")
   compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME_LOWER}")
   list(APPEND GENERATED_HEADERS "${HDR}")
 endforeach()
@@ -116,10 +115,10 @@ endforeach()
 add_custom_target(generated_shaders ALL DEPENDS ${GENERATED_HEADERS})
 set_target_properties(generated_shaders PROPERTIES EXCLUDE_FROM_ALL FALSE)
 
-# Expose generated include dirs (CI shows -I.../build-android/generated)
+# Expose generated include dirs
 include_directories(${GENERATED_DIR} ${SHADER_HEADERS_DIR})
 
-# Explicit source list to avoid globbing surprises
+# Explicit source list
 set(SRC_FILES
   src/xeno_wrapper.c
   src/bc_emulate.c
@@ -131,16 +130,14 @@ set(SRC_FILES
   src/hud.c
 )
 
-# Create library target and include generated headers so CMake tracks byproducts
+# Create library target
 add_library(xeno_wrapper SHARED
   ${SRC_FILES}
   ${GENERATED_HEADERS}
 )
 
-# Ensure headers are generated before compiling xeno_wrapper
 add_dependencies(xeno_wrapper generated_shaders)
 
-# Target include dirs (redundant with global include, but explicit)
 target_include_directories(xeno_wrapper PRIVATE ${GENERATED_DIR} ${SHADER_HEADERS_DIR} ${CMAKE_SOURCE_DIR}/src)
 
 target_compile_definitions(xeno_wrapper PRIVATE $<$<BOOL:${XCLIPSE_ENABLE_ANDROID_LOG}>:XCLIPSE_ANDROID_LOG>)
@@ -167,5 +164,6 @@ install(TARGETS xeno_wrapper
 
 install(FILES usr/share/meta.json DESTINATION usr/share)
 install(FILES etc/exynostools/performance_mode.conf DESTINATION etc/exynostools)
-install(DIRECTORY vendor DESTINATION .)
-install(DIRECTORY profiles DESTINATION .)
+
+# Removed: install(DIRECTORY vendor DESTINATION .)
+# If you later add a vendor directory, re-enable this line.
