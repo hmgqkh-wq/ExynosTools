@@ -2,7 +2,6 @@
 #include "bc_common.glsl"
 layout(local_size_x_id = 0) in;
 
-// BC2: 64-bit explicit alpha (4 bits per texel) + BC1 color block.
 vec3 rgb565_to_rgb(uint c) {
     float r = unormN(u5(c, 11), 5);
     float g = unormN(u6(c, 5), 6);
@@ -14,7 +13,6 @@ void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    // 16 bytes per block: 64-bit alpha + 64-bit BC1 color
     uint a0 = bc_words[bi * 4u + 0u];
     uint a1 = bc_words[bi * 4u + 1u];
     uint c0w = bc_words[bi * 4u + 2u];
@@ -40,7 +38,6 @@ void main() {
     uint colorIdx = c1w;
 
     for (uint t = 0u; t < 16u; ++t) {
-        // Alpha: 4 bits per texel, contiguous
         uint shiftA = t * 4u;
         uint A4 = (shiftA < 32u)
                   ? ((a0 >> shiftA) & 15u)
