@@ -1,3 +1,12 @@
+# Ensure shader header generator is included early so headers exist before target creation
+include("${CMAKE_SOURCE_DIR}/cmake/generate_shader_headers.cmake" OPTIONAL)
+
+# Allow headers generated either into source include/ or in the build tree
+# Primary include location (project include/)
+include_directories("${CMAKE_SOURCE_DIR}/include")
+
+# Secondary include location (generator may output into the build dir)
+include_directories("${CMAKE_BINARY_DIR}/generated_shaders")
 # SPDX-License-Identifier: MIT
 # CMakeLists.txt - build ExynosTools as a shared library (ready to copy)
 cmake_minimum_required(VERSION 3.15)
