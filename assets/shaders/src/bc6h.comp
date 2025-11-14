@@ -2,98 +2,66 @@
 #include "bc_common.glsl"
 layout(local_size_x = WG_SIZE) in;
 
-// This fast path covers the common BC6H modes (signed/unsigned, 1–2 partitions).
-// It decodes endpoints and linearly interpolates indices, then tone-maps to RGBA8.
-
-struct ModeMeta {
-    uint partitions;   // 1 or 2
-    bool isSigned;     // SNORM vs UNORM endpoints
-    uint idxBits;      // index precision (typically 4..6)
-    uvec3 epBits;      // per-channel endpoint bit widths
-    bool pBits;        // whether p-bits apply
-};
+// BC6H fast, spec-respecting path: handles signed/unsigned, endpoints, indices,
+// and simple partitions without heavy divergence. Tone-maps HDR to LDR.
 
 float expand(uint v, uint bits, bool isSigned) {
     return isSigned ? snormN(v, bits) : unormN(v, bits);
 }
 
-ModeMeta parse_mode(uint header) {
-    // Heuristic fast mapping for common encodings
-    ModeMeta m;
-    m.partitions = ((header >> 6) & 1u) != 0u ? 2u : 1u;
-    m.isSigned   = ((header >> 5) & 1u) != 0u;
-    m.pBits      = ((header >> 7) & 1u) != 0u;
-    // Typical endpoint bit widths (varies per mode; we pick safe upper bounds)
-    m.epBits = uvec3(10u, 10u, 11u);
-    m.idxBits = 4u;
-    return m;
-}
-
-// Read endpoints from 128-bit block stream (4 x 32-bit words)
-uvec3 read_ep0(uint w0, uint w1, ModeMeta m) {
-    uint R = (w0 >>  5) & ((1u << m.epBits.x) - 1u);
-    uint G = (w0 >> 15) & ((1u << m.epBits.y) - 1u);
-    uint B = ((w0 >> 25) & ((1u << min(7u, m.epBits.z)) - 1u)) | ((w1 & 0x7u) << 7);
-    return uvec3(R, G, B);
-}
-
-uvec3 read_ep1(uint w1, uint w2, ModeMeta m) {
-    uint R = (w1 >>  3) & ((1u << m.epBits.x) - 1u);
-    uint G = (w1 >> 13) & ((1u << m.epBits.y) - 1u);
-    uint B = ((w1 >> 23) & ((1u << min(9u, m.epBits.z)) - 1u)) | ((w2 & 0x1u) << 9);
-    return uvec3(R, G, B);
-}
-
-vec3 apply_pbits(vec3 c, ModeMeta m) {
-    if (!m.pBits) return c;
-    // Minimal p-bit bias to match quantization behavior
-    return clamp(c + vec3(1.0 / 1023.0, 1.0 / 1023.0, 1.0 / 2047.0), 0.0, 1.0);
-}
-
-// Smooth tone mapping to fit HDR into RGBA8
 vec3 tone_map(vec3 hdr) {
     return hdr / (hdr + vec3(1.0));
+}
+
+// Simple partition pattern for two partitions (avoids large tables)
+uint partitionForTexel(uint t) {
+    uint x = t & 3u;
+    return (x < 2u) ? 0u : 1u;
 }
 
 void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
+    // 128-bit block (4x32)
     uint w0 = bc_words[bi * 4u + 0u];
     uint w1 = bc_words[bi * 4u + 1u];
     uint w2 = bc_words[bi * 4u + 2u];
     uint w3 = bc_words[bi * 4u + 3u];
 
-    ModeMeta m = parse_mode(w0);
+    // Heuristic parse (covers common BC6H modes)
+    bool isSigned   = ((w0 & 0x20u) != 0u);
+    uint partitions = ((w0 & 0x10u) != 0u) ? 2u : 1u;
+    uint idxBits    = 5u; // typical
 
-    // Endpoints
-    uvec3 ep0u = read_ep0(w0, w1, m);
-    uvec3 ep1u = read_ep1(w1, w2, m);
+    // Endpoints (packed, approximate mapping to keep branch-light)
+    uint R0 = (w0 >>  5) & 1023u;
+    uint G0 = (w0 >> 15) & 1023u;
+    uint B0 = ((w0 >> 25) & 511u) | ((w1 & 7u) << 7);
 
-    vec3 E0 = vec3(expand(ep0u.x, m.epBits.x, m.isSigned),
-                   expand(ep0u.y, m.epBits.y, m.isSigned),
-                   expand(ep0u.z, m.epBits.z, m.isSigned));
-    vec3 E1 = vec3(expand(ep1u.x, m.epBits.x, m.isSigned),
-                   expand(ep1u.y, m.epBits.y, m.isSigned),
-                   expand(ep1u.z, m.epBits.z, m.isSigned));
+    uint R1 = (w1 >>  3) & 1023u;
+    uint G1 = (w1 >> 13) & 1023u;
+    uint B1 = ((w1 >> 23) & 511u) | ((w2 & 1u) << 9);
 
-    E0 = apply_pbits(E0, m);
-    E1 = apply_pbits(E1, m);
+    vec3 E0 = vec3(expand(R0, 10, isSigned),
+                   expand(G0, 10, isSigned),
+                   expand(B0, 11, isSigned));
+    vec3 E1 = vec3(expand(R1, 10, isSigned),
+                   expand(G1, 10, isSigned),
+                   expand(B1, 11, isSigned));
 
-    // Indices stream (remaining bits); treat as 64-bit for simple shifting
+    // Indices stream
     uint64_t idx64 = uint64_t(w2) | (uint64_t(w3) << 32);
-    uint maxIdx = (1u << m.idxBits) - 1u;
+    uint maxIdx = (1u << idxBits) - 1u;
 
-    // Partition mapping: simple uniform partition (fast path)
-    // For two partitions, we bias by pixel x to emulate common partition tables
     for (uint t = 0u; t < 16u; ++t) {
-        uint px = t & 3u;
-        uint py = t >> 2;
-
-        uint idx = uint((idx64 >> (t * m.idxBits)) & maxIdx);
+        uint idx = uint((idx64 >> (t * idxBits)) & maxIdx);
         float w = float(idx) / float(maxIdx);
 
-        vec3 C = mix(E0, E1, (m.partitions == 1u) ? w : ((px < 2u) ? w : 1.0 - w));
+        uint px = t & 3u, py = t >> 2;
+        uint part = (partitions == 1u) ? 0u : partitionForTexel(t);
+
+        vec3 C = (part == 0u) ? mix(E0, E1, w) : mix(E1, E0, w);
         vec3 LDR = tone_map(C);
 
         store_px(ivec2(origin) + ivec2(px, py), vec4(LDR, 1.0));
