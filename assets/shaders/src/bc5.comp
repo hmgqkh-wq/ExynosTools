@@ -22,10 +22,8 @@ void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    // R block
     uint r0r1 = bc_words[bi * 4u + 0u];
     uint ri0  = bc_words[bi * 4u + 1u];
-    // G block
     uint g0g1 = bc_words[bi * 4u + 2u];
     uint gi0  = bc_words[bi * 4u + 3u];
 
