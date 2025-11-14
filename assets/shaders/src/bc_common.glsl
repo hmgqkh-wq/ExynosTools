@@ -1,7 +1,16 @@
 #version 450
 
-// Specialization constant ID 0 (controlled from pipeline/CMake)
-layout(constant_id = 0) const uint WG_SIZE = 64;
+// Specialization constant ID provided by CMake: -DWORKGROUP_CONST_ID=<id>
+#ifndef WORKGROUP_CONST_ID
+#define WORKGROUP_CONST_ID 0
+#endif
+
+// Default WG size provided by CMake: -DWG_SIZE_DEFAULT=<n>, fallback 64
+#ifndef WG_SIZE_DEFAULT
+#define WG_SIZE_DEFAULT 64
+#endif
+
+layout(constant_id = WORKGROUP_CONST_ID) const uint WG_SIZE = WG_SIZE_DEFAULT;
 
 // Binding 0: compressed blocks stream (std430 tightly packed)
 layout(std430, binding = 0) readonly buffer SrcBC {
