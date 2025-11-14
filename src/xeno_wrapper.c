@@ -1,28 +1,27 @@
-// SPDX-License-Identifier: MIT
-// src/xeno_wrapper.c
-// Canonical provider of Vulkan loader entry points for ExynosTools.
-// This file unconditionally exports the Vulkan loader entry points
-// with the exact signatures declared by the Vulkan headers.
-
+#include "xeno_wrapper.h"
+#include "bc_emulate.h"
 #include <vulkan/vulkan.h>
-#include <stddef.h>
 
-/* Ensure this unit provides the global symbols */
-#ifndef PROVIDE_VK_GLOBALS
-#define PROVIDE_VK_GLOBALS 1
-#endif
-
-/* Exported implementations MUST match the Vulkan header signatures exactly. */
-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
-    (void)instance;
-    (void)pName;
-    /* Replace with your real loader/dispatch logic if needed.
-       Returning NULL is valid at compile time; runtime resolution may require actual implementation. */
-    return (PFN_vkVoidFunction)NULL;
+VkResult vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice) {
+    VkResult res = vkCreateDevice_original(physicalDevice, pCreateInfo, pAllocator, pDevice);
+    if (res == VK_SUCCESS) {
+        // Initialize context
+        XenoBCContext* ctx = xeno_bc_create_context(*pDevice, physicalDevice);
+    }
+    return res;
 }
 
-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName) {
-    (void)device;
-    (void)pName;
-    return (PFN_vkVoidFunction)NULL;
+void vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBeginInfo, VkSubpassContents contents) {
+    apply_vrs(commandBuffer, pRenderPassBeginInfo->renderArea.extent);  // Apply VRS
+    vkCmdBeginRenderPass_original(commandBuffer, pRenderPassBeginInfo, contents);
+}
+
+// Add async submit
+void async_decode_submit(VkQueue queue, VkCommandBuffer cmd) {
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd
+    };
+    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
 }
