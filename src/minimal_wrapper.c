@@ -10,22 +10,17 @@
 # error "Do not define PROVIDE_VK_GLOBALS for minimal_wrapper.c; define it only for the canonical provider."
 #endif
 
-/* Local non-exported helpers. Callers in this module should call these helpers
-   instead of relying on exported globals to avoid duplicate symbol issues. */
+/* Local non-exported helpers. Callers in this module should use these helpers
+   instead of relying on global exported symbols to avoid duplicate symbol issues. */
 
-static PFN_vkGetInstanceProcAddr my_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
+static PFN_vkVoidFunction my_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     (void)instance;
     (void)pName;
-    /* Minimal fallback: return NULL. Replace with platform-specific resolution if needed. */
-    return NULL;
+    return (PFN_vkVoidFunction)NULL;
 }
 
-static PFN_vkGetDeviceProcAddr my_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
+static PFN_vkVoidFunction my_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     (void)device;
     (void)pName;
-    return NULL;
+    return (PFN_vkVoidFunction)NULL;
 }
-
-/* If other files in this repo currently call vkGetInstanceProcAddr directly,
-   change those call sites to call my_vkGetInstanceProcAddr or the canonical exported
-   functions from xeno_wrapper.c as appropriate. */
