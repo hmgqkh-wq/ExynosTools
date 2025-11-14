@@ -1,4 +1,3 @@
-// src/xeno_log_stream.c
 #include <stdio.h>
 #include "xeno_log.h"
 
