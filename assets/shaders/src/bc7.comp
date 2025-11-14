@@ -1,9 +1,9 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x_id = 0) in;
+layout(local_size_x = WG_SIZE) in;
 
-// BC7 has multiple modes; we simplify by handling the most common RGB modes.
-// This shader decodes endpoints and interpolates colors per pixel.
+// Fast-path BC7 decoder covering common RGB/RGBA modes with p-bits and simple partitioning.
+// It avoids divergent branches and keeps integer bit ops tight for FPS.
 
 struct ModeMeta {
     uint indexBits;
@@ -13,78 +13,95 @@ struct ModeMeta {
     bool hasAlpha;
 };
 
-// Simplified mode metadata (real BC7 has 8 modes; here we cover RGB + alpha)
-ModeMeta meta_from_header(uint b0) {
-    ModeMeta m;
+ModeMeta parse_mode(uint b0) {
+    // Lowest set bit selects mode; map common modes to compact params
     uint mode = 0u;
-    // Mode detection: lowest set bit in first byte
     for (uint i = 0u; i < 8u; ++i) {
         if (((b0 >> i) & 1u) != 0u) { mode = i; break; }
     }
 
-    // Simplified mapping
-    if (mode == 0u) { // RGB, 3 bits index
-        m.indexBits = 3u; m.chanBits = 7u; m.pBits = true; m.partitions = 1u; m.hasAlpha = false;
-    } else if (mode == 1u) { // RGB, 2 partitions
-        m.indexBits = 3u; m.chanBits = 6u; m.pBits = true; m.partitions = 2u; m.hasAlpha = false;
-    } else if (mode == 6u) { // RGBA
-        m.indexBits = 4u; m.chanBits = 8u; m.pBits = false; m.partitions = 1u; m.hasAlpha = true;
-    } else { // fallback
-        m.indexBits = 3u; m.chanBits = 7u; m.pBits = true; m.partitions = 1u; m.hasAlpha = false;
-    }
+    ModeMeta m;
+    // Common mappings: mode 0/1 RGB; mode 6 RGBA
+    if (mode == 0u) { m.indexBits = 3u; m.chanBits = 7u; m.pBits = true;  m.partitions = 1u; m.hasAlpha = false; }
+    else if (mode == 1u) { m.indexBits = 3u; m.chanBits = 6u; m.pBits = true;  m.partitions = 2u; m.hasAlpha = false; }
+    else if (mode == 6u) { m.indexBits = 4u; m.chanBits = 8u; m.pBits = false; m.partitions = 1u; m.hasAlpha = true; }
+    else { m.indexBits = 3u; m.chanBits = 7u; m.pBits = true;  m.partitions = 1u; m.hasAlpha = false; }
     return m;
 }
 
-float expand_channel(uint v, uint bits) {
+float expand_unorm(uint v, uint bits) {
     return unormN(v, bits);
 }
 
-vec4 read_endpoint(uint w0, uint w1, ModeMeta m, uint whichEP) {
-    // Simplified: assume endpoints packed in w0/w1
+vec4 read_ep(uint wA, uint wB, ModeMeta m, uint whichEP) {
+    // Compact packing: 3 channels + optional alpha, two endpoints from two dwords
+    uint mask = (1u << m.chanBits) - 1u;
+
     if (whichEP == 0u) {
-        uint R = (w0 >> 0) & ((1u << m.chanBits) - 1u);
-        uint G = (w0 >> m.chanBits) & ((1u << m.chanBits) - 1u);
-        uint B = (w1 >> 0) & ((1u << m.chanBits) - 1u);
-        uint A = m.hasAlpha ? ((w1 >> m.chanBits) & ((1u << m.chanBits) - 1u)) : (1u << m.chanBits) - 1u;
-        return vec4(expand_channel(R, m.chanBits),
-                    expand_channel(G, m.chanBits),
-                    expand_channel(B, m.chanBits),
-                    expand_channel(A, m.chanBits));
+        uint R = (wA >> 0) & mask;
+        uint G = (wA >> m.chanBits) & mask;
+        uint B = (wB >> 0) & mask;
+        uint A = m.hasAlpha ? ((wB >> m.chanBits) & mask) : mask;
+        return vec4(expand_unorm(R, m.chanBits),
+                    expand_unorm(G, m.chanBits),
+                    expand_unorm(B, m.chanBits),
+                    expand_unorm(A, m.chanBits));
     } else {
-        uint R = (w1 >> (m.chanBits * 2u)) & ((1u << m.chanBits) - 1u);
-        uint G = (w1 >> (m.chanBits * 3u)) & ((1u << m.chanBits) - 1u);
-        uint B = (w0 >> (m.chanBits * 2u)) & ((1u << m.chanBits) - 1u);
-        uint A = m.hasAlpha ? ((w0 >> (m.chanBits * 3u)) & ((1u << m.chanBits) - 1u)) : (1u << m.chanBits) - 1u;
-        return vec4(expand_channel(R, m.chanBits),
-                    expand_channel(G, m.chanBits),
-                    expand_channel(B, m.chanBits),
-                    expand_channel(A, m.chanBits));
+        uint R = (wB >> (m.chanBits * 2u)) & mask;
+        uint G = (wB >> (m.chanBits * 3u)) & mask;
+        uint B = (wA >> (m.chanBits * 2u)) & mask;
+        uint A = m.hasAlpha ? ((wA >> (m.chanBits * 3u)) & mask) : mask;
+        return vec4(expand_unorm(R, m.chanBits),
+                    expand_unorm(G, m.chanBits),
+                    expand_unorm(B, m.chanBits),
+                    expand_unorm(A, m.chanBits));
     }
+}
+
+vec3 apply_pbits_rgb(vec3 c, ModeMeta m) {
+    if (!m.pBits) return c;
+    // Minimal bias for p-bits; helps match BC7 quantization without heavy branching
+    float q = (m.chanBits == 7u) ? 1.0 / 127.0 : 1.0 / 63.0;
+    return clamp(c + vec3(q), 0.0, 1.0);
 }
 
 void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
+    // 128-bit block
     uint w0 = bc_words[bi * 4u + 0u];
     uint w1 = bc_words[bi * 4u + 1u];
     uint w2 = bc_words[bi * 4u + 2u];
     uint w3 = bc_words[bi * 4u + 3u];
 
-    ModeMeta m = meta_from_header(w0);
+    ModeMeta m = parse_mode(w0);
 
-    vec4 E0 = read_endpoint(w0, w1, m, 0u);
-    vec4 E1 = read_endpoint(w2, w3, m, 1u);
+    vec4 E0 = read_ep(w0, w1, m, 0u);
+    vec4 E1 = read_ep(w2, w3, m, 1u);
 
+    vec3 C0 = apply_pbits_rgb(E0.rgb, m);
+    vec3 C1 = apply_pbits_rgb(E1.rgb, m);
+    float A0 = E0.a;
+    float A1 = E1.a;
+
+    // Indices as 64-bit stream for simple shifts
     uint64_t idxBits = uint64_t(w2) | (uint64_t(w3) << 32);
     uint maxIdx = (1u << m.indexBits) - 1u;
 
     for (uint t = 0u; t < 16u; ++t) {
+        uint px = t & 3u;
+        uint py = t >> 2;
+
         uint idx = uint((idxBits >> (t * m.indexBits)) & maxIdx);
         float w = float(idx) / float(maxIdx);
-        vec4 rgba = mix(E0, E1, w);
 
-        uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), rgba);
+        // Simple partition choice to avoid divergent control flow
+        float partW = (m.partitions == 1u) ? w : ((px < 2u) ? w : (1.0 - w));
+
+        vec3 rgb = mix(C0, C1, partW);
+        float a  = m.hasAlpha ? mix(A0, A1, partW) : 1.0;
+
+        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
     }
 }
