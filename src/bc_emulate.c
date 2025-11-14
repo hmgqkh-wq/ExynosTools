@@ -1,21 +1,10 @@
 // src/bc_emulate.c
 // SPDX-License-Identifier: MIT
 // Xclipse 940 focused, production-grade BC decode pipeline for Android 16.
-// - Preserves emulator gaming features, prioritizes FPS gains.
-// - Persistent host-coherent staging pool (ring allocator).
-// - Optional device-local async path can be added later.
-// - Descriptor ring allocator + storage-image binding via VkImageView.
-// - Pipeline creation with specialization constants for LOCAL_X/LOCAL_Y.
-// - Push constants for per-dispatch parameters.
-// - Pure C11, no C++ lambdas. Requires xeno_bc.h, logging.h, and generated shader headers.
-//
-// Required headers produced by scripts:
-//   include/bc1_shader.h ... bc7_shader.h, common_shader.h
-//
-// Notes:
-// - Caller must set ctx->physical, ctx->queue, ctx->queue_family_index when beneficial.
-// - Caller must ensure dst image is in VK_IMAGE_LAYOUT_GENERAL (or provide transitions).
-// - Tweak EXYNOSTOOLS_STAGING_POOL_SIZE via CMake define if needed.
+// This file expects the generated SPIR-V header files to be present in include/:
+//   include/common_shader.h
+//   include/bc1_shader.h ... include/bc7_shader.h
+// Ensure your CMake target_include_directories contains "${CMAKE_SOURCE_DIR}/include".
 
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +17,8 @@
 #include "xeno_bc.h"
 #include "logging.h"
 
-/* Include generated SPIR-V headers (definitions + _len) */
+/* Generated SPIR-V headers (emitter writes full definitions into these files) */
+#include "common_shader.h"
 #include "bc1_shader.h"
 #include "bc2_shader.h"
 #include "bc3_shader.h"
@@ -36,9 +26,8 @@
 #include "bc5_shader.h"
 #include "bc6h_shader.h"
 #include "bc7_shader.h"
-#include "common_shader.h"
 
-/* Tunables (can be overridden at compile time) */
+/* Tunables */
 #ifndef XCLIPSE_DEFAULT_LOCAL_X
 #define XCLIPSE_DEFAULT_LOCAL_X 16u
 #endif
@@ -47,25 +36,22 @@
 #endif
 
 #ifndef EXYNOSTOOLS_STAGING_POOL_SIZE
-#define EXYNOSTOOLS_STAGING_POOL_SIZE (1 << 20) /* 1 MiB default */
+#define EXYNOSTOOLS_STAGING_POOL_SIZE (1 << 20)
 #endif
 
-/* Descriptor bindings (assumed shader layout) */
 #define BINDING_SRC_BUFFER 0
 #define BINDING_DST_IMAGE  1
 
-/* Minimal logging macros */
 #define LOG_E(...) logging_error(__VA_ARGS__)
 #define LOG_I(...) logging_info(__VA_ARGS__)
 
-/* Opaque context (matches xeno_bc.h) */
+/* Opaque context definition */
 struct XenoBCContext {
     VkDevice device;
     VkPhysicalDevice physical;
     VkQueue queue;
     uint32_t queue_family_index;
 
-    /* shader modules */
     VkShaderModule bc1Module;
     VkShaderModule bc2Module;
     VkShaderModule bc3Module;
@@ -74,9 +60,9 @@ struct XenoBCContext {
     VkShaderModule bc6hModule;
     VkShaderModule bc7Module;
 
-    /* pipeline/layout */
     VkDescriptorSetLayout descriptorSetLayout;
     VkPipelineLayout pipelineLayout;
+
     VkPipeline bc1Pipeline;
     VkPipeline bc2Pipeline;
     VkPipeline bc3Pipeline;
@@ -85,43 +71,38 @@ struct XenoBCContext {
     VkPipeline bc6hPipeline;
     VkPipeline bc7Pipeline;
 
-    /* descriptor pool + ring head */
     VkDescriptorPool descriptorPool;
     atomic_uint desc_ring_head;
     uint32_t desc_ring_max;
 
-    /* staging pool (host-coherent persistent) */
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingMemory;
     size_t stagingSize;
     atomic_size_t staging_head;
 
-    /* runtime properties */
     VkPhysicalDeviceProperties physProps;
     uint32_t subgroup_size;
 };
 
 /* Forward declarations */
-static VkResult create_shader_module(VkDevice device, const unsigned char *data, size_t len, VkShaderModule *out);
+static VkResult create_shader_module_from_bytes(VkDevice device, const unsigned char *data, size_t size, VkShaderModule *out);
 static uint32_t find_memory_type_index(VkPhysicalDevice physical, uint32_t typeBits, VkMemoryPropertyFlags props);
-static VkResult create_common_layouts_and_pipelines(XenoBCContext *ctx);
-static void destroy_common_layouts_and_pipelines(XenoBCContext *ctx);
-static VkResult init_staging_pool(XenoBCContext *ctx, size_t pool_size);
-static void destroy_staging_pool(XenoBCContext *ctx);
-static VkResult ensure_descriptor_pool(XenoBCContext *ctx);
-static VkResult allocate_descriptor_from_ring(XenoBCContext *ctx, VkDescriptorSetLayout layout, VkDescriptorSet *out_set);
-static VkResult stage_into_pool(XenoBCContext *ctx, const void *data, size_t size, VkDeviceSize *out_offset);
-static VkResult create_compute_pipeline_with_spec(XenoBCContext *ctx, VkShaderModule module, VkPipeline *out);
+static VkResult create_common_layouts_and_pipelines(struct XenoBCContext *ctx);
+static void destroy_common_layouts_and_pipelines(struct XenoBCContext *ctx);
+static VkResult init_staging_pool(struct XenoBCContext *ctx, size_t pool_size);
+static void destroy_staging_pool(struct XenoBCContext *ctx);
+static VkResult ensure_descriptor_pool(struct XenoBCContext *ctx);
+static VkResult allocate_descriptor_from_ring(struct XenoBCContext *ctx, VkDescriptorSetLayout layout, VkDescriptorSet *out_set);
+static VkResult stage_into_pool(struct XenoBCContext *ctx, const void *data, size_t size, VkDeviceSize *out_offset);
+static VkResult create_compute_pipeline_with_spec(struct XenoBCContext *ctx, VkShaderModule module, VkPipeline *out);
 
-/* ------------------------------------------------------------------------- */
-/* helpers */
-
-static VkResult create_shader_module(VkDevice device, const unsigned char *data, size_t len, VkShaderModule *out)
+/* Helpers */
+static VkResult create_shader_module_from_bytes(VkDevice device, const unsigned char *data, size_t size, VkShaderModule *out)
 {
-    if (!device || !data || len == 0 || !out) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!device || !data || size == 0 || !out) return VK_ERROR_INITIALIZATION_FAILED;
     VkShaderModuleCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ci.codeSize = len;
+    ci.codeSize = size;
     ci.pCode = (const uint32_t *)data;
     return vkCreateShaderModule(device, &ci, NULL, out);
 }
@@ -136,8 +117,7 @@ static uint32_t find_memory_type_index(VkPhysicalDevice physical, uint32_t typeB
     return UINT32_MAX;
 }
 
-/* Create pipeline with specialization constants for local size (LOCAL_X=0, LOCAL_Y=1) */
-static VkResult create_compute_pipeline_with_spec(XenoBCContext *ctx, VkShaderModule module, VkPipeline *out)
+static VkResult create_compute_pipeline_with_spec(struct XenoBCContext *ctx, VkShaderModule module, VkPipeline *out)
 {
     if (!ctx || !out) return VK_ERROR_INITIALIZATION_FAILED;
     if (!module) { *out = VK_NULL_HANDLE; return VK_SUCCESS; }
@@ -168,15 +148,12 @@ static VkResult create_compute_pipeline_with_spec(XenoBCContext *ctx, VkShaderMo
     return vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &cpci, NULL, out);
 }
 
-/* ------------------------------------------------------------------------- */
-/* layout, pipelines, pools */
-
-static VkResult create_common_layouts_and_pipelines(XenoBCContext *ctx)
+/* Create layouts and pipelines */
+static VkResult create_common_layouts_and_pipelines(struct XenoBCContext *ctx)
 {
     if (!ctx) return VK_ERROR_INITIALIZATION_FAILED;
     VkResult r;
 
-    /* descriptor bindings: 0 = src storage buffer; 1 = dst storage image */
     VkDescriptorSetLayoutBinding bindings[2];
     bindings[0].binding = BINDING_SRC_BUFFER;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -203,15 +180,13 @@ static VkResult create_common_layouts_and_pipelines(XenoBCContext *ctx)
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &ctx->descriptorSetLayout;
 
-    /* push constants range: 16 bytes (u32 x,y,w,h) */
-    VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t) * 4 };
+    VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 4 * sizeof(uint32_t) };
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges = &pcr;
 
     r = vkCreatePipelineLayout(ctx->device, &plci, NULL, &ctx->pipelineLayout);
     if (r != VK_SUCCESS) { LOG_E("vkCreatePipelineLayout failed: %d", r); return r; }
 
-    /* Create compute pipelines for each format (modules may be VK_NULL_HANDLE) */
     r = create_compute_pipeline_with_spec(ctx, ctx->bc1Module, &ctx->bc1Pipeline); if (r != VK_SUCCESS) { LOG_E("create pipeline bc1 failed: %d", r); return r; }
     r = create_compute_pipeline_with_spec(ctx, ctx->bc2Module, &ctx->bc2Pipeline); if (r != VK_SUCCESS) { LOG_E("create pipeline bc2 failed: %d", r); return r; }
     r = create_compute_pipeline_with_spec(ctx, ctx->bc3Module, &ctx->bc3Pipeline); if (r != VK_SUCCESS) { LOG_E("create pipeline bc3 failed: %d", r); return r; }
@@ -223,7 +198,7 @@ static VkResult create_common_layouts_and_pipelines(XenoBCContext *ctx)
     return VK_SUCCESS;
 }
 
-static void destroy_common_layouts_and_pipelines(XenoBCContext *ctx)
+static void destroy_common_layouts_and_pipelines(struct XenoBCContext *ctx)
 {
     if (!ctx) return;
     if (ctx->bc1Pipeline) vkDestroyPipeline(ctx->device, ctx->bc1Pipeline, NULL);
@@ -238,19 +213,15 @@ static void destroy_common_layouts_and_pipelines(XenoBCContext *ctx)
     if (ctx->descriptorSetLayout) vkDestroyDescriptorSetLayout(ctx->device, ctx->descriptorSetLayout, NULL);
 }
 
-/* ------------------------------------------------------------------------- */
-/* descriptor pool + ring allocator */
-
-static VkResult ensure_descriptor_pool(XenoBCContext *ctx)
+/* Descriptor pool */
+static VkResult ensure_descriptor_pool(struct XenoBCContext *ctx)
 {
     if (!ctx) return VK_ERROR_INITIALIZATION_FAILED;
     if (ctx->descriptorPool) return VK_SUCCESS;
 
     VkDescriptorPoolSize poolSizes[2];
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 256;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = 256;
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; poolSizes[0].descriptorCount = 256;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;  poolSizes[1].descriptorCount = 256;
 
     VkDescriptorPoolCreateInfo dpci = {0};
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -260,14 +231,11 @@ static VkResult ensure_descriptor_pool(XenoBCContext *ctx)
     dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 
     VkResult r = vkCreateDescriptorPool(ctx->device, &dpci, NULL, &ctx->descriptorPool);
-    if (r == VK_SUCCESS) {
-        atomic_store(&ctx->desc_ring_head, 0);
-        ctx->desc_ring_max = 256;
-    }
+    if (r == VK_SUCCESS) { atomic_store(&ctx->desc_ring_head, 0); ctx->desc_ring_max = 256; }
     return r;
 }
 
-static VkResult allocate_descriptor_from_ring(XenoBCContext *ctx, VkDescriptorSetLayout layout, VkDescriptorSet *out_set)
+static VkResult allocate_descriptor_from_ring(struct XenoBCContext *ctx, VkDescriptorSetLayout layout, VkDescriptorSet *out_set)
 {
     if (!ctx || !ctx->descriptorPool) return VK_ERROR_INITIALIZATION_FAILED;
     VkDescriptorSetAllocateInfo ai = {0};
@@ -275,127 +243,76 @@ static VkResult allocate_descriptor_from_ring(XenoBCContext *ctx, VkDescriptorSe
     ai.descriptorPool = ctx->descriptorPool;
     ai.descriptorSetCount = 1;
     ai.pSetLayouts = &layout;
-
     VkResult r = vkAllocateDescriptorSets(ctx->device, &ai, out_set);
     if (r != VK_SUCCESS) return r;
     (void)atomic_fetch_add(&ctx->desc_ring_head, 1);
     return VK_SUCCESS;
 }
 
-/* ------------------------------------------------------------------------- */
-/* staging pool (persistent, host-coherent ring) */
-
-static VkResult init_staging_pool(XenoBCContext *ctx, size_t pool_size)
+/* Staging pool */
+static VkResult init_staging_pool(struct XenoBCContext *ctx, size_t pool_size)
 {
     if (!ctx || pool_size == 0) return VK_ERROR_INITIALIZATION_FAILED;
     ctx->stagingSize = pool_size;
-
     VkBufferCreateInfo bci = {0};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = pool_size;
     bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
     VkResult r = vkCreateBuffer(ctx->device, &bci, NULL, &ctx->stagingBuffer);
     if (r != VK_SUCCESS) return r;
-
-    VkMemoryRequirements mr;
-    vkGetBufferMemoryRequirements(ctx->device, ctx->stagingBuffer, &mr);
-
-    if (ctx->physical == VK_NULL_HANDLE) {
-        LOG_E("physical device not set on XenoBCContext before init_staging_pool");
-        vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL);
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-
-    uint32_t memIndex = find_memory_type_index(ctx->physical, mr.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkMemoryRequirements mr; vkGetBufferMemoryRequirements(ctx->device, ctx->stagingBuffer, &mr);
+    if (ctx->physical == VK_NULL_HANDLE) { LOG_E("physical device not set"); vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return VK_ERROR_INITIALIZATION_FAILED; }
+    uint32_t memIndex = find_memory_type_index(ctx->physical, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (memIndex == UINT32_MAX) { vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return VK_ERROR_MEMORY_MAP_FAILED; }
-
-    VkMemoryAllocateInfo mai = {0};
-    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    mai.allocationSize = mr.size;
-    mai.memoryTypeIndex = memIndex;
-
-    r = vkAllocateMemory(ctx->device, &mai, NULL, &ctx->stagingMemory);
-    if (r != VK_SUCCESS) { vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return r; }
-
-    r = vkBindBufferMemory(ctx->device, ctx->stagingBuffer, ctx->stagingMemory, 0);
-    if (r != VK_SUCCESS) { vkFreeMemory(ctx->device, ctx->stagingMemory, NULL); vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return r; }
-
+    VkMemoryAllocateInfo mai = {0}; mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; mai.allocationSize = mr.size; mai.memoryTypeIndex = memIndex;
+    r = vkAllocateMemory(ctx->device, &mai, NULL, &ctx->stagingMemory); if (r != VK_SUCCESS) { vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return r; }
+    r = vkBindBufferMemory(ctx->device, ctx->stagingBuffer, ctx->stagingMemory, 0); if (r != VK_SUCCESS) { vkFreeMemory(ctx->device, ctx->stagingMemory, NULL); vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return r; }
     atomic_store(&ctx->staging_head, 0);
     return VK_SUCCESS;
 }
 
-static void destroy_staging_pool(XenoBCContext *ctx)
+static void destroy_staging_pool(struct XenoBCContext *ctx)
 {
     if (!ctx) return;
     if (ctx->stagingMemory) { vkFreeMemory(ctx->device, ctx->stagingMemory, NULL); ctx->stagingMemory = VK_NULL_HANDLE; }
     if (ctx->stagingBuffer) { vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); ctx->stagingBuffer = VK_NULL_HANDLE; }
 }
 
-static VkResult stage_into_pool(XenoBCContext *ctx, const void *data, size_t size, VkDeviceSize *out_offset)
+static VkResult stage_into_pool(struct XenoBCContext *ctx, const void *data, size_t size, VkDeviceSize *out_offset)
 {
     if (!ctx || !data || size == 0 || !out_offset) return VK_ERROR_INITIALIZATION_FAILED;
     const size_t align = 64u;
     size_t alloc = (size + align - 1) & ~(align - 1);
-
     size_t head = (size_t)atomic_fetch_add(&ctx->staging_head, alloc);
-    if (head + alloc > ctx->stagingSize) {
-        /* wrap - caller must ensure GPU finished using older data in pool */
-        atomic_store(&ctx->staging_head, 0);
-        head = 0;
-    }
-
-    void *mapped = NULL;
-    VkResult r = vkMapMemory(ctx->device, ctx->stagingMemory, head, alloc, 0, &mapped);
-    if (r != VK_SUCCESS) return r;
-    memcpy(mapped, data, size);
-    vkUnmapMemory(ctx->device, ctx->stagingMemory);
-
-    *out_offset = (VkDeviceSize)head;
-    return VK_SUCCESS;
+    if (head + alloc > ctx->stagingSize) { atomic_store(&ctx->staging_head, 0); head = 0; }
+    void *mapped = NULL; VkResult r = vkMapMemory(ctx->device, ctx->stagingMemory, head, alloc, 0, &mapped); if (r != VK_SUCCESS) return r;
+    memcpy(mapped, data, size); vkUnmapMemory(ctx->device, ctx->stagingMemory);
+    *out_offset = (VkDeviceSize)head; return VK_SUCCESS;
 }
 
-/* ------------------------------------------------------------------------- */
-/* Public API */
-
-VkResult xeno_bc_create_context(VkDevice device, XenoBCContext **out_ctx)
+/* Public API: create/destroy context and decode */
+VkResult xeno_bc_create_context(VkDevice device, struct XenoBCContext **out_ctx)
 {
     if (!device || !out_ctx) return VK_ERROR_INITIALIZATION_FAILED;
-    XenoBCContext *ctx = (XenoBCContext*)calloc(1, sizeof(*ctx));
+    struct XenoBCContext *ctx = (struct XenoBCContext*)calloc(1, sizeof(*ctx));
     if (!ctx) return VK_ERROR_OUT_OF_HOST_MEMORY;
     ctx->device = device;
-
-    /* Note: caller should set ctx->physical and ctx->queue if available before heavy ops.
-       Attempt to query physical properties if ctx->physical already set. */
-    if (ctx->physical != VK_NULL_HANDLE) {
-        vkGetPhysicalDeviceProperties(ctx->physical, &ctx->physProps);
-    }
-
+    if (ctx->physical != VK_NULL_HANDLE) vkGetPhysicalDeviceProperties(ctx->physical, &ctx->physProps);
     VkResult r;
+    if (bc1_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc1_shader_spv, bc1_shader_spv_len, &ctx->bc1Module); if (r != VK_SUCCESS) goto fail; }
+    if (bc2_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc2_shader_spv, bc2_shader_spv_len, &ctx->bc2Module); if (r != VK_SUCCESS) goto fail; }
+    if (bc3_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc3_shader_spv, bc3_shader_spv_len, &ctx->bc3Module); if (r != VK_SUCCESS) goto fail; }
+    if (bc4_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc4_shader_spv, bc4_shader_spv_len, &ctx->bc4Module); if (r != VK_SUCCESS) goto fail; }
+    if (bc5_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc5_shader_spv, bc5_shader_spv_len, &ctx->bc5Module); if (r != VK_SUCCESS) goto fail; }
+    if (bc6h_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc6h_shader_spv, bc6h_shader_spv_len, &ctx->bc6hModule); if (r != VK_SUCCESS) goto fail; }
+    if (bc7_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc7_shader_spv, bc7_shader_spv_len, &ctx->bc7Module); if (r != VK_SUCCESS) goto fail; }
 
-    /* Create shader modules if data present */
-    if (bc1_shader_spv_len > 0) { r = create_shader_module(device, bc1_shader_spv, bc1_shader_spv_len, &ctx->bc1Module); if (r != VK_SUCCESS) goto fail; }
-    if (bc2_shader_spv_len > 0) { r = create_shader_module(device, bc2_shader_spv, bc2_shader_spv_len, &ctx->bc2Module); if (r != VK_SUCCESS) goto fail; }
-    if (bc3_shader_spv_len > 0) { r = create_shader_module(device, bc3_shader_spv, bc3_shader_spv_len, &ctx->bc3Module); if (r != VK_SUCCESS) goto fail; }
-    if (bc4_shader_spv_len > 0) { r = create_shader_module(device, bc4_shader_spv, bc4_shader_spv_len, &ctx->bc4Module); if (r != VK_SUCCESS) goto fail; }
-    if (bc5_shader_spv_len > 0) { r = create_shader_module(device, bc5_shader_spv, bc5_shader_spv_len, &ctx->bc5Module); if (r != VK_SUCCESS) goto fail; }
-    if (bc6h_shader_spv_len > 0) { r = create_shader_module(device, bc6h_shader_spv, bc6h_shader_spv_len, &ctx->bc6hModule); if (r != VK_SUCCESS) goto fail; }
-    if (bc7_shader_spv_len > 0) { r = create_shader_module(device, bc7_shader_spv, bc7_shader_spv_len, &ctx->bc7Module); if (r != VK_SUCCESS) goto fail; }
+    r = create_common_layouts_and_pipelines(ctx); if (r != VK_SUCCESS) { LOG_E("create_common_layouts_and_pipelines failed: %d", r); goto fail; }
+    r = init_staging_pool(ctx, (size_t)EXYNOSTOOLS_STAGING_POOL_SIZE); if (r != VK_SUCCESS) { LOG_E("init_staging_pool failed: %d", r); goto fail; }
+    r = ensure_descriptor_pool(ctx); if (r != VK_SUCCESS) { LOG_E("ensure_descriptor_pool failed: %d", r); goto fail; }
 
-    r = create_common_layouts_and_pipelines(ctx);
-    if (r != VK_SUCCESS) { LOG_E("create_common_layouts_and_pipelines failed: %d", r); goto fail; }
-
-    r = init_staging_pool(ctx, (size_t)EXYNOSTOOLS_STAGING_POOL_SIZE);
-    if (r != VK_SUCCESS) { LOG_E("init_staging_pool failed: %d", r); goto fail; }
-
-    r = ensure_descriptor_pool(ctx);
-    if (r != VK_SUCCESS) { LOG_E("ensure_descriptor_pool failed: %d", r); goto fail; }
-
-    *out_ctx = ctx;
-    return VK_SUCCESS;
-
+    *out_ctx = ctx; return VK_SUCCESS;
 fail:
     if (ctx) {
         destroy_common_layouts_and_pipelines(ctx);
@@ -412,7 +329,7 @@ fail:
     return VK_ERROR_INITIALIZATION_FAILED;
 }
 
-void xeno_bc_destroy_context(XenoBCContext *ctx)
+void xeno_bc_destroy_context(struct XenoBCContext *ctx)
 {
     if (!ctx) return;
     if (ctx->device) {
@@ -430,18 +347,9 @@ void xeno_bc_destroy_context(XenoBCContext *ctx)
     free(ctx);
 }
 
-/* ------------------------------------------------------------------------- */
-/* Main decode API
- * - host_data/host_size: stage into internal staging pool (preferred for frequent small uploads)
- * - src_buffer: if provided and valid, used directly (no staging)
- * - dst_view: VkImageView to write into (storage image). If VK_NULL_HANDLE, caller must manage image binding externally.
- * - format: VkImageBCFormat (enum in xeno_bc.h)
- * - extent: region to decode
- *
- * Caller responsibility: command buffer must be in RECORDING state and dst image layout must allow GENERAL writes.
- */
+/* Main decode */
 VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
-                              XenoBCContext *ctx,
+                              struct XenoBCContext *ctx,
                               const void *host_data,
                               size_t host_size,
                               VkBuffer src_buffer,
@@ -470,12 +378,10 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
     r = allocate_descriptor_from_ring(ctx, ctx->descriptorSetLayout, &descSet);
     if (r != VK_SUCCESS) { LOG_E("allocate_descriptor_from_ring failed: %d", r); return r; }
 
-    /* Bind source buffer: stage if host data provided */
     if (host_data && host_size > 0) {
         VkDeviceSize offset = 0;
         r = stage_into_pool(ctx, host_data, host_size, &offset);
         if (r != VK_SUCCESS) { LOG_E("stage_into_pool failed: %d", r); return r; }
-
         VkDescriptorBufferInfo dbi = { ctx->stagingBuffer, offset, host_size };
         VkWriteDescriptorSet w = {0};
         w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -498,7 +404,6 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
         vkUpdateDescriptorSets(ctx->device, 1, &w, 0, NULL);
     }
 
-    /* Bind dst storage image if view provided */
     if (dst_view != VK_NULL_HANDLE) {
         VkDescriptorImageInfo dii = {0};
         dii.imageView = dst_view;
@@ -513,15 +418,12 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
         vkUpdateDescriptorSets(ctx->device, 1, &w, 0, NULL);
     }
 
-    /* Bind and dispatch */
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ctx->pipelineLayout, 0, 1, &descSet, 0, NULL);
 
-    /* Push constants: x, y, width, height */
     uint32_t push[4] = { 0, 0, extent.width, extent.height };
     vkCmdPushConstants(cmd, ctx->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
 
-    /* Dispatch tuned for Xclipse 940 */
     uint32_t gx = (extent.width + XCLIPSE_DEFAULT_LOCAL_X - 1) / XCLIPSE_DEFAULT_LOCAL_X;
     uint32_t gy = (extent.height + XCLIPSE_DEFAULT_LOCAL_Y - 1) / XCLIPSE_DEFAULT_LOCAL_Y;
     uint32_t gz = extent.depth ? extent.depth : 1;
