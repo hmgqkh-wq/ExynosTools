@@ -1,20 +1,11 @@
-// include/logging.h
-// Minimal logging API used by bc_emulate.c and other sources.
-
 #ifndef LOGGING_H_
 #define LOGGING_H_
 
-#include <stdarg.h>
+#include <stdio.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+FILE *xeno_log_stream(void);
 
-void logging_error(const char *fmt, ...);
-void logging_info(const char *fmt, ...);
-
-#ifdef __cplusplus
-}
-#endif
+#define logging_error(fmt, ...) fprintf(xeno_log_stream(), "[ExynosTools][E] " fmt "\n", ##__VA_ARGS__)
+#define logging_info(fmt, ...)  fprintf(xeno_log_stream(), "[ExynosTools][I] " fmt "\n", ##__VA_ARGS__)
 
 #endif // LOGGING_H_
