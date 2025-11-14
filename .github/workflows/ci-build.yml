@@ -24,7 +24,21 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y build-essential cmake ninja-build glslang-tools spirv-tools python3
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          glslang-tools \
+          spirv-tools \
+          python3 \
+          python3-venv \
+          libvulkan-dev \
+          vulkan-utils
+
+    - name: Ensure scripts are runnable (no-op if already executable)
+      run: |
+        chmod +x scripts/generate_spv_headers.sh || true
+        chmod +x cmake/emit_spv_header.py || true
 
     - name: Generate SPIR-V headers (serial, bash)
       run: |
@@ -35,7 +49,7 @@ jobs:
       run: |
         echo "::group::include/"
         ls -la include || true
-        head -n 40 include/bc4_shader.h || true
+        head -n 40 include/bc7_shader.h || true
         echo "::endgroup::"
 
     - name: Configure (Ninja)
@@ -45,6 +59,15 @@ jobs:
     - name: Build
       run: |
         cmake --build build -- -j$(nproc)
+
+    - name: Run tests (optional)
+      if: always()
+      run: |
+        if [ -f build/run-tests.sh ]; then
+          bash build/run-tests.sh || true
+        else
+          echo "No tests to run"
+        fi
 
     - name: Archive build artifacts
       if: always()
