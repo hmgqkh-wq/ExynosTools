@@ -2,8 +2,6 @@
 #include "bc_common.glsl"
 layout(local_size_x_id = 0) in;
 
-// BC4: single-channel with BC3-like interpolation.
-// Signed/unsigned choice: use PC.scale100==200 to select SNORM fast-path (cheap branch outside hot loop).
 float chan_interp(uint c0, uint c1, uint idx, bool isSigned) {
     float C0 = isSigned ? snormN(c0, 8) : float(c0) / 255.0;
     float C1 = isSigned ? snormN(c1, 8) : float(c1) / 255.0;
@@ -29,7 +27,7 @@ void main() {
 
     uint c0 = c0c1 & 0xffu;
     uint c1 = (c0c1 >> 8) & 0xffu;
-    uint64_t idx64 = uint64_t(i0); // 48 bits used
+    uint64_t idx64 = uint64_t(i0);
 
     bool isSigned = (PC.scale100 == 200u);
 
