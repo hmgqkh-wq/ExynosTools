@@ -26,14 +26,7 @@ jobs:
         sudo apt-get update -y
         sudo apt-get install -y build-essential cmake ninja-build glslang-tools python3
 
-    - name: Show repo layout
-      run: |
-        echo "::group::Tree"
-        ls -la
-        ls -la assets/shaders/src || true
-        echo "::endgroup::"
-
-    - name: Generate SPIR-V headers
+    - name: Generate SPIR-V headers (Vulkan, include path fix)
       run: |
         set -euo pipefail
         bash scripts/generate_spv_headers.sh
