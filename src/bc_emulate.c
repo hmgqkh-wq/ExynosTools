@@ -1,23 +1,23 @@
 // src/bc_emulate.c
 // SPDX-License-Identifier: MIT
-// Xclipse 940 focused, production-grade BC decode pipeline for Android 16.
-// This file is resilient to missing generated headers (bcN_shader.h).
-// No dependency on common_shader.h. Pure C11, no C++ constructs.
+// Resilient BC decode pipeline that tolerates missing generated SPIR-V headers.
+// Includes guarded inclusion of generated headers and fallback externs.
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <inttypes.h>
 #include <stdatomic.h>
 #include <vulkan/vulkan.h>
 
 #include "xeno_bc.h"
 #include "logging.h"
+#include "xeno_log.h" /* ensures logging macros / helpers are available */
 
-/* Resilient inclusion of generated SPIR-V headers:
-   We detect presence per-format and only expose symbols when headers exist.
-   This prevents compile errors if a particular header is not generated. */
+/* Prefer generated headers if present. They define bcN_shader_spv and bcN_shader_spv_len.
+   Use __has_include where supported to include per-format headers. */
 #if defined(__has_include)
   #if __has_include("bc1_shader.h")
     #include "bc1_shader.h"
@@ -48,7 +48,7 @@
     #define HAVE_BC7 1
   #endif
 #else
-  /* Conservative includes when __has_include is unavailable; comment out if any header is missing */
+  /* If __has_include not available, attempt to include expected headers (may fail at compile-time) */
   #include "bc1_shader.h"
   #include "bc2_shader.h"
   #include "bc3_shader.h"
@@ -63,6 +63,30 @@
   #define HAVE_BC5 1
   #define HAVE_BC6H 1
   #define HAVE_BC7 1
+#endif
+
+/* If generated headers aren't present, declare safe extern fallbacks
+   so the file still compiles. Use uint32_t for SPIR-V words and size_t for lengths. */
+#ifndef HAVE_BC1
+extern const uint32_t bc1_shader_spv[]; extern const size_t bc1_shader_spv_len;
+#endif
+#ifndef HAVE_BC2
+extern const uint32_t bc2_shader_spv[]; extern const size_t bc2_shader_spv_len;
+#endif
+#ifndef HAVE_BC3
+extern const uint32_t bc3_shader_spv[]; extern const size_t bc3_shader_spv_len;
+#endif
+#ifndef HAVE_BC4
+extern const uint32_t bc4_shader_spv[]; extern const size_t bc4_shader_spv_len;
+#endif
+#ifndef HAVE_BC5
+extern const uint32_t bc5_shader_spv[]; extern const size_t bc5_shader_spv_len;
+#endif
+#ifndef HAVE_BC6H
+extern const uint32_t bc6h_shader_spv[]; extern const size_t bc6h_shader_spv_len;
+#endif
+#ifndef HAVE_BC7
+extern const uint32_t bc7_shader_spv[]; extern const size_t bc7_shader_spv_len;
 #endif
 
 /* Tunables */
@@ -80,11 +104,11 @@
 #define BINDING_SRC_BUFFER 0
 #define BINDING_DST_IMAGE  1
 
-/* Logging */
+/* Logging macros */
 #define LOG_E(...) logging_error(__VA_ARGS__)
 #define LOG_I(...) logging_info(__VA_ARGS__)
 
-/* Context */
+/* Context definition (trimmed to essentials for compilation) */
 struct XenoBCContext {
     VkDevice device;
     VkPhysicalDevice physical;
@@ -123,8 +147,8 @@ struct XenoBCContext {
     uint32_t subgroup_size;
 };
 
-/* Forward */
-static VkResult create_shader_module_from_bytes(VkDevice device, const unsigned char *data, size_t size, VkShaderModule *out);
+/* Forward declarations */
+static VkResult create_shader_module_from_bytes(VkDevice device, const uint32_t *data, size_t size, VkShaderModule *out);
 static uint32_t find_memory_type_index(VkPhysicalDevice physical, uint32_t typeBits, VkMemoryPropertyFlags props);
 static VkResult create_common_layouts_and_pipelines(struct XenoBCContext *ctx);
 static void destroy_common_layouts_and_pipelines(struct XenoBCContext *ctx);
@@ -135,14 +159,16 @@ static VkResult allocate_descriptor_from_ring(struct XenoBCContext *ctx, VkDescr
 static VkResult stage_into_pool(struct XenoBCContext *ctx, const void *data, size_t size, VkDeviceSize *out_offset);
 static VkResult create_compute_pipeline_with_spec(struct XenoBCContext *ctx, VkShaderModule module, VkPipeline *out);
 
-/* Helpers */
-static VkResult create_shader_module_from_bytes(VkDevice device, const unsigned char *data, size_t size, VkShaderModule *out)
+/* Implementation - helper that creates a shader module from SPIR-V words */
+static VkResult create_shader_module_from_bytes(VkDevice device, const uint32_t *data, size_t size, VkShaderModule *out)
 {
-    if (!device || !data || size == 0 || !out) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!device || !out) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!data || size == 0) { *out = VK_NULL_HANDLE; return VK_SUCCESS; }
+
     VkShaderModuleCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     ci.codeSize = size;
-    ci.pCode = (const uint32_t *)data;
+    ci.pCode = data;
     return vkCreateShaderModule(device, &ci, NULL, out);
 }
 
@@ -187,7 +213,7 @@ static VkResult create_compute_pipeline_with_spec(struct XenoBCContext *ctx, VkS
     return vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &cpci, NULL, out);
 }
 
-/* Layouts and pipelines */
+/* Create descriptor set layout + pipeline layout and pipelines for available modules */
 static VkResult create_common_layouts_and_pipelines(struct XenoBCContext *ctx)
 {
     if (!ctx) return VK_ERROR_INITIALIZATION_FAILED;
@@ -252,7 +278,7 @@ static void destroy_common_layouts_and_pipelines(struct XenoBCContext *ctx)
     if (ctx->descriptorSetLayout) vkDestroyDescriptorSetLayout(ctx->device, ctx->descriptorSetLayout, NULL);
 }
 
-/* Descriptor pool */
+/* Descriptor pool + staging pool helpers (kept minimal for compile) */
 static VkResult ensure_descriptor_pool(struct XenoBCContext *ctx)
 {
     if (!ctx) return VK_ERROR_INITIALIZATION_FAILED;
@@ -274,21 +300,6 @@ static VkResult ensure_descriptor_pool(struct XenoBCContext *ctx)
     return r;
 }
 
-static VkResult allocate_descriptor_from_ring(struct XenoBCContext *ctx, VkDescriptorSetLayout layout, VkDescriptorSet *out_set)
-{
-    if (!ctx || !ctx->descriptorPool) return VK_ERROR_INITIALIZATION_FAILED;
-    VkDescriptorSetAllocateInfo ai = {0};
-    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool = ctx->descriptorPool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &layout;
-    VkResult r = vkAllocateDescriptorSets(ctx->device, &ai, out_set);
-    if (r != VK_SUCCESS) return r;
-    (void)atomic_fetch_add(&ctx->desc_ring_head, 1);
-    return VK_SUCCESS;
-}
-
-/* Staging pool */
 static VkResult init_staging_pool(struct XenoBCContext *ctx, size_t pool_size)
 {
     if (!ctx || pool_size == 0) return VK_ERROR_INITIALIZATION_FAILED;
@@ -341,7 +352,7 @@ static VkResult stage_into_pool(struct XenoBCContext *ctx, const void *data, siz
     return VK_SUCCESS;
 }
 
-/* Public API */
+/* Public API - create/destroy context and decode; these use the shader arrays if provided */
 VkResult xeno_bc_create_context(VkDevice device, struct XenoBCContext **out_ctx)
 {
     if (!device || !out_ctx) return VK_ERROR_INITIALIZATION_FAILED;
@@ -351,29 +362,29 @@ VkResult xeno_bc_create_context(VkDevice device, struct XenoBCContext **out_ctx)
 
     if (ctx->physical != VK_NULL_HANDLE) vkGetPhysicalDeviceProperties(ctx->physical, &ctx->physProps);
 
-    VkResult r;
+    VkResult r = VK_SUCCESS;
 
-    /* Create modules only for available headers/symbols */
+    /* Create shader modules only when the symbol length is non-zero */
     #ifdef HAVE_BC1
-    if (bc1_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc1_shader_spv, bc1_shader_spv_len, &ctx->bc1Module); if (r != VK_SUCCESS) goto fail; }
+      if (bc1_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc1_shader_spv, bc1_shader_spv_len, &ctx->bc1Module); if (r != VK_SUCCESS) goto fail; }
     #endif
     #ifdef HAVE_BC2
-    if (bc2_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc2_shader_spv, bc2_shader_spv_len, &ctx->bc2Module); if (r != VK_SUCCESS) goto fail; }
+      if (bc2_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc2_shader_spv, bc2_shader_spv_len, &ctx->bc2Module); if (r != VK_SUCCESS) goto fail; }
     #endif
     #ifdef HAVE_BC3
-    if (bc3_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc3_shader_spv, bc3_shader_spv_len, &ctx->bc3Module); if (r != VK_SUCCESS) goto fail; }
+      if (bc3_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc3_shader_spv, bc3_shader_spv_len, &ctx->bc3Module); if (r != VK_SUCCESS) goto fail; }
     #endif
     #ifdef HAVE_BC4
-    if (bc4_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc4_shader_spv, bc4_shader_spv_len, &ctx->bc4Module); if (r != VK_SUCCESS) goto fail; }
+      if (bc4_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc4_shader_spv, bc4_shader_spv_len, &ctx->bc4Module); if (r != VK_SUCCESS) goto fail; }
     #endif
     #ifdef HAVE_BC5
-    if (bc5_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc5_shader_spv, bc5_shader_spv_len, &ctx->bc5Module); if (r != VK_SUCCESS) goto fail; }
+      if (bc5_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc5_shader_spv, bc5_shader_spv_len, &ctx->bc5Module); if (r != VK_SUCCESS) goto fail; }
     #endif
     #ifdef HAVE_BC6H
-    if (bc6h_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc6h_shader_spv, bc6h_shader_spv_len, &ctx->bc6hModule); if (r != VK_SUCCESS) goto fail; }
+      if (bc6h_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc6h_shader_spv, bc6h_shader_spv_len, &ctx->bc6hModule); if (r != VK_SUCCESS) goto fail; }
     #endif
     #ifdef HAVE_BC7
-    if (bc7_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc7_shader_spv, bc7_shader_spv_len, &ctx->bc7Module); if (r != VK_SUCCESS) goto fail; }
+      if (bc7_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc7_shader_spv, bc7_shader_spv_len, &ctx->bc7Module); if (r != VK_SUCCESS) goto fail; }
     #endif
 
     r = create_common_layouts_and_pipelines(ctx); if (r != VK_SUCCESS) { LOG_E("create_common_layouts_and_pipelines failed: %d", r); goto fail; }
@@ -416,7 +427,7 @@ void xeno_bc_destroy_context(struct XenoBCContext *ctx)
     free(ctx);
 }
 
-/* Decode */
+/* Decode function (keeps same semantics as before) */
 VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
                               struct XenoBCContext *ctx,
                               const void *host_data,
