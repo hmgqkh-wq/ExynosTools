@@ -9,35 +9,78 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    env:
+      ANDROID_NDK_HOME: ${{ runner.tool_cache }}/android-ndk-r25b
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install build tools
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake ninja-build meson zstd python3-pip make vim-common glslang-tools libvulkan-dev
+          sudo apt-get install -y build-essential cmake ninja-build meson zstd python3-pip make vim-common glslang-tools libvulkan-dev wget
 
-      - name: Install Vulkan SDK (for glslc)
+      - name: Install Vulkan SDK (for glslc/glslangValidator)
         run: |
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
           sudo apt update
-          sudo apt install -y vulkan-sdk
+          sudo apt install -y vulkan-sdk || true
 
       - name: Setup Android NDK r25b
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25b
 
+      - name: Ensure python3 present
+        run: |
+          python3 --version
+          pip3 --version || sudo apt-get install -y python3-pip
+
+      - name: Generate SPIR-V headers (glslangValidator -> headers)
+        run: |
+          set -euo pipefail
+          OUT_DIR=build-android/generated_spv
+          mkdir -p "$OUT_DIR"
+          # Update SHADER_SRC_DIR to where your .comp files live in the repo
+          SHADER_SRC_DIR=assets/shaders/src
+          # expected shader basenames required by bc_emulate.c
+          NAMES="bc1 bc2 bc3 bc4 bc5 bc6h bc7"
+          for NAME in $NAMES; do
+            SRC="$SHADER_SRC_DIR/${NAME}.comp"
+            SPV="$OUT_DIR/${NAME}.spv"
+            HDR="$OUT_DIR/${NAME}_shader.h"
+            if [ -f "$SRC" ]; then
+              echo "Compiling shader $SRC -> $SPV"
+              glslangValidator -V -o "$SPV" "$SRC"
+              python3 scripts/spv_to_header.py "$SPV" "$HDR" "${NAME}_shader"
+            else
+              echo "Missing shader source: $SRC"
+              exit 1
+            fi
+          done
+
       - name: Configure (CMake Android arm64 with ray tracing)
-        run: cmake -S . -B build-android -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=31 -DCMAKE_BUILD_TYPE=Release -DANDROID_STL=c++_shared -DCMAKE_C_FLAGS="-I$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" -DCMAKE_VERBOSE_MAKEFILE=ON -DVK_USE_PLATFORM_ANDROID_KHR=ON -DENABLE_RAY_TRACING=ON -DENABLE_VRS=ON
+        run: |
+          cmake -S . -B build-android \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=31 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_C_FLAGS="-I$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" \
+            -DCMAKE_VERBOSE_MAKEFILE=ON \
+            -DVK_USE_PLATFORM_ANDROID_KHR=ON \
+            -DENABLE_RAY_TRACING=ON \
+            -DENABLE_VRS=ON
 
       - name: Build (CMake)
         run: cmake --build build-android --config Release -j
 
       - name: Install to staging
-        run: cmake --install build-android --prefix $(pwd)/staging
+        run: cmake --install build-android --prefix "$(pwd)/staging"
 
       - name: Verify size
         run: |
@@ -55,7 +98,10 @@ jobs:
           cp -v usr/share/meta.json pkg/usr/share/ || echo "meta.json copy failed"
           cp -v etc/exynostools/performance_mode.conf pkg/etc/exynostools/ || echo "conf copy failed"
           cp -v profiles/winlator/*.env pkg/profiles/winlator/ || echo "env copy failed"
-          if [ -d build-android/shaders ]; then cp -v build-android/shaders/*.spv pkg/assets/shaders/decode/ || echo "No SPIR-V files to copy"; fi
+          if [ -d build-android/generated_spv ]; then
+            # include SPIR-V headers (optional) and compiled SPV binaries
+            cp -v build-android/generated_spv/*.spv pkg/assets/shaders/decode/ || true
+          fi
 
       - name: Create tar.zst
         run: |
