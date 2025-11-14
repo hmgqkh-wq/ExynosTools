@@ -1,61 +1,92 @@
-# Ensure shader header generator is included early so headers exist before target creation
-include("${CMAKE_SOURCE_DIR}/cmake/generate_shader_headers.cmake" OPTIONAL)
+cmake_minimum_required(VERSION 3.16)
+project(ExynosTools LANGUAGES C CXX)
 
-# Allow headers generated either into source include/ or in the build tree
-# Primary include location (project include/)
-include_directories("${CMAKE_SOURCE_DIR}/include")
+# Build type defaults
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
-# Secondary include location (generator may output into the build dir)
-include_directories("${CMAKE_BINARY_DIR}/generated_shaders")
-# SPDX-License-Identifier: MIT
-# CMakeLists.txt - build ExynosTools as a shared library (ready to copy)
-cmake_minimum_required(VERSION 3.15)
-project(ExynosTools C)
+# Useful compiler flags (adjust as needed)
+if(CMAKE_C_COMPILER_ID MATCHES "Clang" OR CMAKE_C_COMPILER_ID MATCHES "GNU")
+  add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+endif()
 
-# Basic build settings
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+# Make sure we have an out-of-source build
+if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
+  message(WARNING "In-source builds are discouraged. Consider using a build/ directory.")
+endif()
 
-# Source collection: include all .c under src/ (adjust if you have special exclusions)
-file(GLOB_RECURSE EXYNOSTOOLS_SOURCES
-    "${CMAKE_SOURCE_DIR}/src/*.c"
-)
+# ------------------------------------------------------------------
+# Shader generation
+# Include your generator early so headers are available before targets
+# This file is OPTIONAL to avoid hard error if it isn't present locally
+if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/generate_shader_headers.cmake")
+  include("${CMAKE_SOURCE_DIR}/cmake/generate_shader_headers.cmake")
+else()
+  message(STATUS "cmake/generate_shader_headers.cmake not found; continuing (CI or manual generation expected).")
+endif()
 
-# Public include directories
+# Ensure generated headers in source include/ or build tree are found by compiler
+# Prefer source include/ (so committed headers are used if present).
 include_directories(
-    "${CMAKE_SOURCE_DIR}/include"
-    "${CMAKE_SOURCE_DIR}/build-android/shaders/src"
+  "${CMAKE_SOURCE_DIR}/include"
+  "${CMAKE_BINARY_DIR}/generated_shaders"
 )
 
-# Ensure cmake/enable_xeno_globals.cmake runs (it marks xeno_wrapper.c to export globals)
-if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/enable_xeno_globals.cmake")
-    include("${CMAKE_SOURCE_DIR}/cmake/enable_xeno_globals.cmake")
+# Provide a CACHE option so CI or users can disable generator if desired
+option(GENERATE_SHADERS "Run SPIR-V shader generation step" ON)
+if(GENERATE_SHADERS)
+  # If the generate_shader_headers.cmake defined a gen_shaders target, it was created above.
+  # If not, add a placeholder target so dependent targets can still add_dependencies safely.
+  if(NOT TARGET gen_shaders)
+    add_custom_target(gen_shaders)
+  endif()
 endif()
 
-# Create the shared library target
-add_library(exynostools SHARED ${EXYNOSTOOLS_SOURCES})
+# ------------------------------------------------------------------
+# Project layout detection
+set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
+set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
 
-# Compile definitions and platform-specific flags
-target_compile_definitions(exynostools PRIVATE ANDROID)
-# Keep format-security warnings as in CI; change if necessary:
-target_compile_options(exynostools PRIVATE -Wformat -Werror=format-security)
+# Collect source files if no src/CMakeLists.txt is present
+if(EXISTS "${SRC_DIR}/CMakeLists.txt")
+  add_subdirectory("${SRC_DIR}")
+else()
+  # Basic heuristic: gather .c and .cpp files under src/
+  file(GLOB_RECURSE EXYNOSTOOLS_SRCS "${SRC_DIR}/*.c" "${SRC_DIR}/*.cpp" "${SRC_DIR}/*.cc")
+  if(NOT EXYNOSTOOLS_SRCS)
+    message(WARNING "No source files found under ${SRC_DIR}. Add a subdirectory or populate src/ with sources.")
+  endif()
 
-# Link against typical Android libs (adjust if your project needs more)
-find_library(LOG_LIB log)
-find_library(ANDROID_LIB android)
+  # Create the target (adjust name and properties as your project expects)
+  add_library(exynostools STATIC ${EXYNOSTOOLS_SRCS})
 
-if(LOG_LIB)
-    target_link_libraries(exynostools PRIVATE ${LOG_LIB})
+  # Ensure shader generation happens before building the library
+  add_dependencies(exynostools gen_shaders)
+
+  # Public include dirs
+  target_include_directories(exynostools PUBLIC
+    "${INCLUDE_DIR}"
+    "${CMAKE_BINARY_DIR}/generated_shaders"
+  )
+
+  # Example compile options and definitions for Android cross builds; keep harmless if unused
+  if(ANDROID)
+    target_compile_definitions(exynostools PRIVATE ANDROID)
+  endif()
+
+  # Example: set C standard if needed
+  set_target_properties(exynostools PROPERTIES
+    C_STANDARD 11
+    C_STANDARD_REQUIRED ON
+  )
 endif()
-if(ANDROID_LIB)
-    target_link_libraries(exynostools PRIVATE ${ANDROID_LIB})
-endif()
 
-# Install rules (optional): place the produced .so into package_temp/usr/lib
-install(TARGETS exynostools
-    LIBRARY DESTINATION package_temp/usr/lib
-)
+# ------------------------------------------------------------------
+# Install rules (optional, adjust as needed)
+install(DIRECTORY "${INCLUDE_DIR}/" DESTINATION include OPTIONAL)
 
-# Export compile commands for tooling (optional)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# Export useful status
+message(STATUS "CMake binary dir: ${CMAKE_BINARY_DIR}")
+message(STATUS "Include directories: ${INCLUDE_DIR}, ${CMAKE_BINARY_DIR}/generated_shaders")
+message(STATUS "Shader generation: ${GENERATE_SHADERS}")
