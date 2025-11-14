@@ -1,6 +1,4 @@
 // src/main.c
-// Minimal entrypoint to satisfy linker in CI builds.
-
 #include <stdio.h>
 
 int main(int argc, char **argv)
