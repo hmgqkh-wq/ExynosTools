@@ -1,146 +1,68 @@
 cmake_minimum_required(VERSION 3.18)
-project(ExynosTools LANGUAGES C)
+project(ExynosTools LANGUAGES C CXX)
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Options
-option(ENABLE_LTO "Enable link-time optimization" ON)
-option(SHADERS_REQUIRED "Fail if shader compiler or sources are missing" ON)
+# Output dirs
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# Workgroup size controls
-set(WG_SPEC_CONST_ID "0" CACHE STRING "Specialization constant ID for workgroup size")
-set(WG_SIZE_DEFAULT "64" CACHE STRING "Default workgroup size baked into shaders")
+# Include paths
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/src
+)
 
-# Shader list (all lowercase, matches assets/shaders/src)
-set(BC_SHADERS bc1 bc2 bc3 bc4 bc5 bc6h bc7)
+# Source aggregation
+file(GLOB_RECURSE EXYNOSTOOLS_SOURCES
+    src/*.cpp
+    src/*.c
+)
 
-# Dependencies
-find_program(GLSLC_EXECUTABLE glslc REQUIRED)
-message(STATUS "Found glslc: ${GLSLC_EXECUTABLE}")
+add_executable(exynostools ${EXYNOSTOOLS_SOURCES})
 
-# Generator script for headers
-set(GEN_HEADER_SCRIPT "${CMAKE_SOURCE_DIR}/generate_shader_header.cmake")
-if(NOT EXISTS "${GEN_HEADER_SCRIPT}")
-  message(FATAL_ERROR "Missing required file: ${GEN_HEADER_SCRIPT}")
-endif()
+# Vulkan
+find_package(Vulkan REQUIRED)
+target_link_libraries(exynostools PRIVATE Vulkan::Vulkan)
 
-# Generated directories
-set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
-set(SHADER_HEADERS_DIR "${GENERATED_DIR}/shaders")
-file(MAKE_DIRECTORY "${GENERATED_DIR}")
-file(MAKE_DIRECTORY "${SHADER_HEADERS_DIR}")
-file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
+# Shader compile
+set(SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/src)
+set(SHADER_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+file(MAKE_DIRECTORY ${SHADER_OUTPUT_DIR})
 
-# Helper function
-function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWER DEFINES)
-  get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
-  set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
+# Only compile .comp files
+set(SHADER_SOURCES
+    bc1.comp
+    bc2.comp
+    bc3.comp
+    bc4.comp
+    bc5.comp
+    bc6h.comp
+    bc7.comp
+)
 
-  if(SHADERS_REQUIRED AND NOT EXISTS "${SHADER_SOURCE}")
-    message(FATAL_ERROR "Shader source required but missing: ${SHADER_SOURCE}")
-  endif()
+foreach(SHADER_FILE ${SHADER_SOURCES})
+    set(INPUT_FILE ${SHADER_SRC_DIR}/${SHADER_FILE})
+    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
+    set(OUTPUT_FILE ${SHADER_OUTPUT_DIR}/${SHADER_NAME}.spv)
 
-  add_custom_command(
-    OUTPUT ${SPIRV_OUTPUT}
-    COMMAND ${GLSLC_EXECUTABLE}
-            -x glsl
-            -I${CMAKE_SOURCE_DIR}/assets/shaders/src
-            ${DEFINES}
-            ${SHADER_SOURCE}
-            -o ${SPIRV_OUTPUT}
-    DEPENDS ${SHADER_SOURCE}
-    COMMENT "Compiling ${SHADER_SOURCE} -> ${SPIRV_OUTPUT}"
-    VERBATIM
-  )
+    add_custom_command(
+        OUTPUT ${OUTPUT_FILE}
+        COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader: ${SHADER_FILE}"
+        COMMAND glslc ${INPUT_FILE} -o ${OUTPUT_FILE}
+        DEPENDS ${INPUT_FILE} ${SHADER_SRC_DIR}/bc_common.glsl
+        COMMENT "Compiling ${SHADER_FILE} to SPIR-V"
+        VERBATIM
+    )
 
-  add_custom_command(
-    OUTPUT ${HEADER_OUTPUT}
-    COMMAND ${CMAKE_COMMAND}
-            -DSPIRV_FILE=${SPIRV_OUTPUT}
-            -DHEADER_FILE=${HEADER_OUTPUT}
-            -DVAR_NAME=${VARIABLE_NAME_LOWER}
-            -P ${GEN_HEADER_SCRIPT}
-    DEPENDS ${SPIRV_OUTPUT} ${GEN_HEADER_SCRIPT}
-    COMMENT "Generating header ${HEADER_OUTPUT}"
-    VERBATIM
-  )
-endfunction()
-
-# Build shader headers
-set(GENERATED_HEADERS "")
-foreach(s IN LISTS BC_SHADERS)
-  set(SRC "${CMAKE_SOURCE_DIR}/assets/shaders/src/${s}.comp")
-  set(HDR "${SHADER_HEADERS_DIR}/${s}_shader.h")
-  set(VARNAME_LOWER "${s}_shader_spv")
-
-  set(DEF "-DWORKGROUP_CONST_ID=${WG_SPEC_CONST_ID} -DWG_SIZE_DEFAULT=${WG_SIZE_DEFAULT}")
-
-  compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME_LOWER}" "${DEF}")
-  list(APPEND GENERATED_HEADERS "${HDR}")
+    list(APPEND COMPILED_SHADERS ${OUTPUT_FILE})
 endforeach()
 
-# Check shared include exists
-if(SHADERS_REQUIRED AND NOT EXISTS "${CMAKE_SOURCE_DIR}/assets/shaders/src/bc_common.glsl")
-  message(FATAL_ERROR "Missing shared shader header: assets/shaders/src/bc_common.glsl")
-endif()
+add_custom_target(generated_shaders ALL DEPENDS ${COMPILED_SHADERS})
+add_dependencies(exynostools generated_shaders)
 
-add_custom_target(generated_shaders ALL DEPENDS ${GENERATED_HEADERS})
-
-# Library sources (adapt to your repo)
-set(SRC_FILES
-  src/xeno_wrapper.c
-  src/xeno_wrapper.h
-  src/bc_emulate.c
-  src/bc_emulate.h
-  src/logging.c
-  src/perf_conf.c
-  src/app_profile.c
-  src/hud.c
-)
-
-# Build shared library
-add_library(xeno_wrapper SHARED
-  ${SRC_FILES}
-  ${GENERATED_HEADERS}
-)
-
-add_dependencies(xeno_wrapper generated_shaders)
-
-target_include_directories(xeno_wrapper
-  PRIVATE
-    ${GENERATED_DIR}
-    ${SHADER_HEADERS_DIR}
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-find_package(Threads REQUIRED)
-target_link_libraries(xeno_wrapper PRIVATE Threads::Threads vulkan dl)
-
-# LTO
-if(ENABLE_LTO)
-  include(CheckIPOSupported)
-  check_ipo_supported(RESULT ipo_supported OUTPUT ipo_msg)
-  if(ipo_supported)
-    set_target_properties(xeno_wrapper PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
-  endif()
-endif()
-
-# Public header and naming
-set_target_properties(xeno_wrapper PROPERTIES
-  OUTPUT_NAME "xeno_wrapper"
-  PREFIX "lib"
-  PUBLIC_HEADER "src/xeno_wrapper.h"
-)
-
-# Compile-time visibility of WG settings
-target_compile_definitions(xeno_wrapper PRIVATE
-  WG_SPEC_CONST_ID=${WG_SPEC_CONST_ID}
-  WG_SIZE_DEFAULT=${WG_SIZE_DEFAULT}
-)
-
-# Install (adjust paths to your packaging layout)
-install(TARGETS xeno_wrapper
-  LIBRARY DESTINATION usr/lib
-  PUBLIC_HEADER DESTINATION usr/include
-)
+# Install/packaging (optional)
+install(DIRECTORY ${SHADER_OUTPUT_DIR}/ DESTINATION shaders)
+install(TARGETS exynostools RUNTIME DESTINATION bin)
