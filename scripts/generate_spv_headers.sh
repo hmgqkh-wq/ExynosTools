@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Serial, defensive SPIR-V generation: compile -> validate -> optional optimize -> emit header.
-# Designed to be run with: bash scripts/generate_spv_headers.sh
+# Run via bash (executable bit not required): bash scripts/generate_spv_headers.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SH_DIR="$ROOT/assets/shaders/src"
@@ -11,7 +11,6 @@ PY="$ROOT/cmake/emit_spv_header.py"
 
 mkdir -p "$OUT_DIR" "$TMP_DIR"
 
-# Required tools
 command -v glslangValidator >/dev/null 2>&1 || { echo "ERROR: glslangValidator not found. Install glslang-tools."; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
 
@@ -22,10 +21,18 @@ echo "Generator starting. Shader dir: $SH_DIR"
 [ -n "$SPIRV_OPT_BIN" ] && echo "spirv-opt: $SPIRV_OPT_BIN" || echo "spirv-opt: not found (skipping optimization)"
 [ -n "$SPIRV_VAL_BIN" ] && echo "spirv-val: $SPIRV_VAL_BIN" || echo "spirv-val: not found (skipping validation)"
 
+# Compile only entry-point shaders; skip include-only files like bc_common.glsl
 for src in "$SH_DIR"/*.{comp,glsl}; do
   [ -f "$src" ] || continue
   name="$(basename "$src")"
   base="${name%%.*}"
+
+  # Skip shared include file
+  if [ "$name" = "bc_common.glsl" ]; then
+    echo "Skipping include-only file: $name"
+    continue
+  fi
+
   raw="$TMP_DIR/${base}.spv"
   opt="$TMP_DIR/${base}.opt.spv"
   out="$raw"
