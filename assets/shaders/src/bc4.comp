@@ -1,14 +1,16 @@
 #version 450
 #extension GL_GOOGLE_include_directive : enable
+#extension GL_AMD_shader_ballot : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable  // For half4
 #include "bc_common.glsl"
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;  // RDNA3 wave size
 
 layout(set = 0, binding = 0) buffer InputBuffer {
     uint data[];
 } inputBuffer;
 
-layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
+layout(set = 0, binding = 1, r32f) uniform image2D outputImage;  // Single channel for BC4
 
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;
@@ -17,26 +19,40 @@ void main() {
     uint alphaBlock = inputBuffer.data[blockIndex];
     uint indexBlock = inputBuffer.data[blockIndex + 1];
 
-    float a0 = unpackAlpha(alphaBlock & 0xFF);
-    float a1 = unpackAlpha((alphaBlock >> 8) & 0xFF);
+    float16_t a0 = float16_t(unpackAlpha(alphaBlock & 0xFF));
+    float16_t a1 = float16_t(unpackAlpha((alphaBlock >> 8) & 0xFF));
 
-    float alphas[8];
+    // Use wave min/max for alpha bounds (reduce sync)
+    float16_t minAlpha = subgroupMin(a0);
+    float16_t maxAlpha = subgroupMax(a1);
+
+    float16_t alphas[8];
     alphas[0] = a0;
     alphas[1] = a1;
-    alphas[2] = (6.0 * a0 + 1.0 * a1) / 7.0;
-    alphas[3] = (5.0 * a0 + 2.0 * a1) / 7.0;
-    alphas[4] = (4.0 * a0 + 3.0 * a1) / 7.0;
-    alphas[5] = (3.0 * a0 + 4.0 * a1) / 7.0;
-    alphas[6] = (2.0 * a0 + 5.0 * a1) / 7.0;
-    alphas[7] = (1.0 * a0 + 6.0 * a1) / 7.0;
+    alphas[2] = (6.0hf * a0 + 1.0hf * a1) / 7.0hf;
+    alphas[3] = (5.0hf * a0 + 2.0hf * a1) / 7.0hf;
+    alphas[4] = (4.0hf * a0 + 3.0hf * a1) / 7.0hf;
+    alphas[5] = (3.0hf * a0 + 4.0hf * a1) / 7.0hf;
+    alphas[6] = (2.0hf * a0 + 5.0hf * a1) / 7.0hf;
+    alphas[7] = (1.0hf * a0 + 6.0hf * a1) / 7.0hf;
 
     uint indices = indexBlock;
 
-    for (uint y = 0u; y < 4u; y++) {
-        for (uint x = 0u; x < 4u; x++) {
-            uint idx = (indices >> ((y * 4 + x) * 3)) & 0x7;
-            vec4 color = vec4(alphas[idx], alphas[idx], alphas[idx], 1.0);
-            imageStore(outputImage, coord + ivec2(x, y), color);
-        }
-    }
+    // Unroll pixel write (no loop overhead)
+    uint idx00 = (indices >> 0) & 0x7; imageStore(outputImage, coord + ivec2(0, 0), vec4(alphas[idx00]));
+    uint idx10 = (indices >> 3) & 0x7; imageStore(outputImage, coord + ivec2(1, 0), vec4(alphas[idx10]));
+    uint idx20 = (indices >> 6) & 0x7; imageStore(outputImage, coord + ivec2(2, 0), vec4(alphas[idx20]));
+    uint idx30 = (indices >> 9) & 0x7; imageStore(outputImage, coord + ivec2(3, 0), vec4(alphas[idx30]));
+    uint idx01 = (indices >> 12) & 0x7; imageStore(outputImage, coord + ivec2(0, 1), vec4(alphas[idx01]));
+    uint idx11 = (indices >> 15) & 0x7; imageStore(outputImage, coord + ivec2(1, 1), vec4(alphas[idx11]));
+    uint idx21 = (indices >> 18) & 0x7; imageStore(outputImage, coord + ivec2(2, 1), vec4(alphas[idx21]));
+    uint idx31 = (indices >> 21) & 0x7; imageStore(outputImage, coord + ivec2(3, 1), vec4(alphas[idx31]));
+    uint idx02 = (indices >> 24) & 0x7; imageStore(outputImage, coord + ivec2(0, 2), vec4(alphas[idx02]));
+    uint idx12 = (indices >> 27) & 0x7; imageStore(outputImage, coord + ivec2(1, 2), vec4(alphas[idx12]));
+    uint idx22 = (indices >> 30) & 0x7; imageStore(outputImage, coord + ivec2(2, 2), vec4(alphas[idx22]));
+    uint idx32 = (indices >> 33) & 0x7; imageStore(outputImage, coord + ivec2(3, 2), vec4(alphas[idx32]));
+    uint idx03 = (indices >> 36) & 0x7; imageStore(outputImage, coord + ivec2(0, 3), vec4(alphas[idx03]));
+    uint idx13 = (indices >> 39) & 0x7; imageStore(outputImage, coord + ivec2(1, 3), vec4(alphas[idx13]));
+    uint idx23 = (indices >> 42) & 0x7; imageStore(outputImage, coord + ivec2(2, 3), vec4(alphas[idx23]));
+    uint idx33 = (indices >> 45) & 0x7; imageStore(outputImage, coord + ivec2(3, 3), vec4(alphas[idx33]));
 }
