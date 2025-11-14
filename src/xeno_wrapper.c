@@ -23,5 +23,8 @@ void async_decode_submit(VkQueue queue, VkCommandBuffer cmd) {
         .commandBufferCount = 1,
         .pCommandBuffers = &cmd
     };
-    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    VkResult res = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (res != VK_SUCCESS) {
+        XENO_LOGE("Async submit failed: %d", res);
+    }
 }
