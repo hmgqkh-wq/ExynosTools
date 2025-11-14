@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-# scripts/spv_to_header.py
-# Usage: python3 scripts/spv_to_header.py input.spv out_header.h symbol_prefix
-# Example: python3 scripts/spv_to_header.py build-android/generated_spv/bc1.spv build-android/generated_spv/bc1_shader.h bc1_shader
-
 import sys, os, struct
 
 def emit_header(spv_path, hdr_path, sym_prefix):
