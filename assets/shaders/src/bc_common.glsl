@@ -1,62 +1,53 @@
-#version 450
+// Shared helpers, push constants, and storage types.
+// NOTE: Do NOT compile this file directly. It is included by .comp shaders.
 
-#ifndef WORKGROUP_CONST_ID
-#define WORKGROUP_CONST_ID 0
-#endif
-
-#ifndef WG_SIZE_DEFAULT
-#define WG_SIZE_DEFAULT 64
-#endif
-
-layout(constant_id = WORKGROUP_CONST_ID) const uint WG_SIZE = WG_SIZE_DEFAULT;
-
-layout(std430, binding = 0) readonly buffer SrcBC {
+layout(set = 0, binding = 0) readonly buffer BCWords {
     uint bc_words[];
 };
 
-layout(binding = 1, rgba8) uniform writeonly image2D dst_rgba;
-
-layout(push_constant) uniform PushData {
-    uint width;
-    uint height;
-    uint groupsX;
-    uint reserved0;
-    uint wg_size;
+layout(push_constant) uniform PushConst {
+    // Scale hints or flags (e.g., 200 == signed channels for BC4/5)
     uint scale100;
+    // Workgroup specialization default; not used directly here
+    uint wg_hint;
 } PC;
 
+// Specialization constant for workgroup size (set by pipeline specialization).
+layout(constant_id = 0) const uint WG_SIZE = 64u;
+
+// Utility: index helpers for a 4x4 texel block per BC block
 uint block_index() {
-    return gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * PC.groupsX;
+    return gl_GlobalInvocationID.x;
 }
 
 uvec2 block_origin(uint bi) {
-    uint rowBlocks = (PC.width + 3u) / 4u;
-    uint by = bi / rowBlocks;
-    uint bx = bi % rowBlocks;
-    return uvec2(bx * 4u, by * 4u);
+    // Each block maps to 4x4 pixels; caller defines tiling outside
+    // Here we assume linear blocks laid out along X
+    uint bx = bi * 4u;
+    return uvec2(bx, 0u);
 }
 
-uint u5(uint v, uint sh) { return (v >> sh) & 31u; }
-uint u6(uint v, uint sh) { return (v >> sh) & 63u; }
-uint u8(uint v, uint sh) { return (v >> sh) & 255u; }
+// Store function: write a rgba32f pixel to an image
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2D out_img;
 
-uint getBits2x(uint lo, uint hi, uint start, uint count) {
-    if (start + count <= 32u) return (lo >> start) & ((1u << count) - 1u);
-    uint loPart = lo >> start;
-    uint hiPart = hi & ((1u << ((start + count) - 32u)) - 1u);
-    return loPart | (hiPart << (32u - start));
+void store_px(ivec2 pos, vec4 rgba) {
+    imageStore(out_img, pos, rgba);
 }
 
-float unormN(uint v, uint n) { return float(v) / float((1u << n) - 1u); }
-
-float snormN(uint v, uint n) {
-    int ival = int(v);
-    if ((ival & (1 << (n - 1))) != 0) ival -= (1 << n);
-    int maxv = (1 << (n - 1)) - 1;
-    return clamp(float(ival) / float(maxv), -1.0, 1.0);
+// Normalization helpers
+float unormN(uint v, uint bits) {
+    uint maxv = (bits >= 32u) ? 0xFFFFFFFFu : ((1u << bits) - 1u);
+    return float(v) / float(maxv);
 }
 
-void store_px(ivec2 p, vec4 rgba) {
-    if (uint(p.x) < PC.width && uint(p.y) < PC.height)
-        imageStore(dst_rgba, p, clamp(rgba, vec4(0.0), vec4(1.0)));
+float snormN(uint v, uint bits) {
+    // Interpret v as signed with 'bits' width
+    int smax = (1 << (bits - 1)) - 1;
+    int sval = int(v);
+    if ((sval & (1 << (bits - 1))) != 0) { // negative
+        sval = sval - (1 << bits);
+    }
+    // Map to [-1, 1]
+    float f = float(sval) / float(smax);
+    return clamp(f, -1.0, 1.0);
 }
