@@ -94,3 +94,7 @@ install(TARGETS xeno_wrapper
 install(FILES usr/share/meta.json DESTINATION usr/share)
 install(FILES etc/exynostools/performance_mode.conf DESTINATION etc/exynostools)
 install(DIRECTORY etc/exynostools/profiles DESTINATION etc/exynostools)
+
+# Add unit test executable
+add_executable(bc_test tests/bc_test.c)
+target_link_libraries(bc_test PRIVATE xeno_wrapper Vulkan::Vulkan)
