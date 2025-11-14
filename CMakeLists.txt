@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.18)
 
 project(ExynosTools LANGUAGES C)
 
@@ -7,117 +7,88 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(XCLIPSE_ENABLE_ANDROID_LOG "Enable Android logging" OFF)
 option(BUILD_WITH_THREAD_SANITIZER "Build with thread sanitizer (for debugging only)" OFF)
-option(SHADERS_REQUIRED "Fail configure if shader compiler or sources are missing" OFF)
 option(ENABLE_LTO "Enable link-time optimization" ON)
+option(SHADERS_REQUIRED "Fail configure if shader compiler or sources are missing" ON)
+option(ENABLE_BINDLESS "Enable VK_EXT_descriptor_indexing usage" ON)
+option(ENABLE_RAYTRACING "Enable VK_KHR_ray_tracing_pipeline path" ON)
 
-# Prefer glslc if available
-find_program(GLSLC_EXECUTABLE glslc)
-if(NOT GLSLC_EXECUTABLE)
-  message(STATUS "glslc not found in PATH; shader compilation will be skipped and fallback headers generated")
-else()
-  message(STATUS "Found glslc: ${GLSLC_EXECUTABLE}")
-endif()
+find_program(GLSLC_EXECUTABLE glslc REQUIRED)
+message(STATUS "Found glslc: ${GLSLC_EXECUTABLE}")
 
-# Generator script path (must exist)
 set(GEN_HEADER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/generate_shader_header.cmake")
 if(NOT EXISTS "${GEN_HEADER_SCRIPT}")
   message(FATAL_ERROR "Missing required file: ${GEN_HEADER_SCRIPT}")
 endif()
 
-# Generated directories (align with CI logs)
 set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 set(SHADER_HEADERS_DIR "${GENERATED_DIR}/shaders")
 file(MAKE_DIRECTORY ${SHADER_HEADERS_DIR})
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
 
-# Helper: compile shader -> SPIR-V -> C header, or emit fallback header
-function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWER)
+function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWER DEFINES)
   get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
   set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
-  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
-  file(MAKE_DIRECTORY "${SHADER_HEADERS_DIR}")
 
-  if(EXISTS "${SHADER_SOURCE}")
-    if(GLSLC_EXECUTABLE)
-      add_custom_command(
-        OUTPUT ${SPIRV_OUTPUT}
-        COMMAND ${GLSLC_EXECUTABLE} -I${CMAKE_SOURCE_DIR}/assets/shaders/src ${SHADER_SOURCE} -o ${SPIRV_OUTPUT}
-        DEPENDS ${SHADER_SOURCE} ${CMAKE_SOURCE_DIR}/assets/shaders/src/bc_common.glsl
-        COMMENT "Compiling ${SHADER_SOURCE} to SPIR-V"
-        VERBATIM
-      )
-      add_custom_command(
-        OUTPUT ${HEADER_OUTPUT}
-        COMMAND ${CMAKE_COMMAND}
-                -DSPIRV_FILE=${SPIRV_OUTPUT}
-                -DHEADER_FILE=${HEADER_OUTPUT}
-                -DVAR_NAME=${VARIABLE_NAME_LOWER}
-                -P ${GEN_HEADER_SCRIPT}
-        DEPENDS ${SPIRV_OUTPUT} ${GEN_HEADER_SCRIPT}
-        COMMENT "Generating C header ${HEADER_OUTPUT} from ${SPIRV_OUTPUT}"
-        VERBATIM
-      )
-    else()
-      if(SHADERS_REQUIRED)
-        message(FATAL_ERROR "Shader compiler not found but SHADERS_REQUIRED=ON")
-      endif()
-      add_custom_command(
-        OUTPUT ${HEADER_OUTPUT}
-        COMMAND ${CMAKE_COMMAND}
-                -DSPIRV_FILE=__MISSING__
-                -DHEADER_FILE=${HEADER_OUTPUT}
-                -DVAR_NAME=${VARIABLE_NAME_LOWER}
-                -P ${GEN_HEADER_SCRIPT}
-        DEPENDS ${GEN_HEADER_SCRIPT}
-        COMMENT "Generating fallback header ${HEADER_OUTPUT} (glslc missing)"
-        VERBATIM
-      )
-    endif()
-  else()
-    if(SHADERS_REQUIRED)
-      message(FATAL_ERROR "Shader source ${SHADER_SOURCE} required but missing")
-    endif()
-    add_custom_command(
-      OUTPUT ${HEADER_OUTPUT}
-      COMMAND ${CMAKE_COMMAND}
-              -DSPIRV_FILE=__MISSING__
-              -DHEADER_FILE=${HEADER_OUTPUT}
-              -DVAR_NAME=${VARIABLE_NAME_LOWER}
-              -P ${GEN_HEADER_SCRIPT}
-      DEPENDS ${GEN_HEADER_SCRIPT}
-      COMMENT "Generating fallback header ${HEADER_OUTPUT} (shader source missing)"
-      VERBATIM
-    )
+  if(NOT EXISTS "${SHADER_SOURCE}")
+    message(FATAL_ERROR "Shader source required but missing: ${SHADER_SOURCE}")
   endif()
+
+  add_custom_command(
+    OUTPUT ${SPIRV_OUTPUT}
+    COMMAND ${GLSLC_EXECUTABLE}
+            -I${CMAKE_SOURCE_DIR}/assets/shaders/src
+            ${DEFINES}
+            ${SHADER_SOURCE}
+            -o ${SPIRV_OUTPUT}
+    DEPENDS ${SHADER_SOURCE}
+    COMMENT "Compiling ${SHADER_SOURCE} to SPIR-V"
+    VERBATIM
+  )
+  add_custom_command(
+    OUTPUT ${HEADER_OUTPUT}
+    COMMAND ${CMAKE_COMMAND}
+            -DSPIRV_FILE=${SPIRV_OUTPUT}
+            -DHEADER_FILE=${HEADER_OUTPUT}
+            -DVAR_NAME=${VARIABLE_NAME_LOWER}
+            -P ${GEN_HEADER_SCRIPT}
+    DEPENDS ${SPIRV_OUTPUT} ${GEN_HEADER_SCRIPT}
+    COMMENT "Generating header ${HEADER_OUTPUT}"
+    VERBATIM
+  )
 endfunction()
 
-# Shaders referenced by sources — keep these in sync with bc_emulate.c includes
 set(BC_SHADERS bc1 bc3 bc4 bc5 bc6h bc7)
 
-# Request generation and collect headers
 set(GENERATED_HEADERS "")
 foreach(s IN LISTS BC_SHADERS)
   set(SRC "${CMAKE_SOURCE_DIR}/assets/shaders/src/${s}.comp")
   set(HDR "${SHADER_HEADERS_DIR}/${s}_shader.h")
   set(VARNAME_LOWER "${s}_shader_spv")
-  compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME_LOWER}")
+  set(DEF "-DWORKGROUP_CONST_ID=0")
+  if(ENABLE_BINDLESS)
+    set(DEF "${DEF} -DENABLE_BINDLESS=1")
+  endif()
+  compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME_LOWER}" "${DEF}")
   list(APPEND GENERATED_HEADERS "${HDR}")
 endforeach()
 
 add_custom_target(generated_shaders ALL DEPENDS ${GENERATED_HEADERS})
 
-# Expose generated include dirs
-include_directories(${GENERATED_DIR} ${SHADER_HEADERS_DIR})
+include_directories(${GENERATED_DIR} ${SHADER_HEADERS_DIR} ${CMAKE_SOURCE_DIR}/src)
 
-# Explicit source list
 set(SRC_FILES
   src/xeno_wrapper.c
+  src/xeno_wrapper.h
   src/bc_emulate.c
+  src/bc_emulate.h
   src/features_patch.c
   src/detect.c
   src/perf_conf.c
   src/logging.c
   src/app_profile.c
   src/hud.c
+  src/rt_path.c
+  src/rt_path.h
 )
 
 add_library(xeno_wrapper SHARED
@@ -145,6 +116,12 @@ set_target_properties(xeno_wrapper PROPERTIES
   PUBLIC_HEADER "src/xeno_wrapper.h"
 )
 
+target_compile_definitions(xeno_wrapper PRIVATE
+  $<$<BOOL:${XCLIPSE_ENABLE_ANDROID_LOG}>:XCLIPSE_ANDROID_LOG>
+  $<$<BOOL:${ENABLE_BINDLESS}>:ENABLE_BINDLESS>
+  $<$<BOOL:${ENABLE_RAYTRACING}>:ENABLE_RAYTRACING>
+)
+
 install(TARGETS xeno_wrapper
   LIBRARY DESTINATION usr/lib
   PUBLIC_HEADER DESTINATION usr/include
@@ -152,5 +129,3 @@ install(TARGETS xeno_wrapper
 
 install(FILES usr/share/meta.json DESTINATION usr/share)
 install(FILES etc/exynostools/performance_mode.conf DESTINATION etc/exynostools)
-
-# vendor install removed (re-add when directory exists)
