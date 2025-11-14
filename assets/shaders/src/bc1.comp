@@ -1,48 +1,42 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 #include "bc_common.glsl"
-layout(local_size_x = 64) in;
 
-// BC1: RGB 5:6:5 + 2-bit indices
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;  // Optimized for RDNA3 cache
 
-float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
-float expand6(uint v) { return float((v << 2) | (v >> 4)) / 255.0; }
+layout(set = 0, binding = 0) buffer InputBuffer {
+    uint data[];
+} inputBuffer;
 
-vec3 color565(uint c) {
-    uint r5 = (c >> 11) & 31u;
-    uint g6 = (c >> 5) & 63u;
-    uint b5 = c & 31u;
-    return vec3(expand5(r5), expand6(g6), expand5(b5));
-}
+layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
 
 void main() {
-    uint bi = block_index();
-    uvec2 origin = block_origin(bi);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;  // Process 4x4 block
+    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 2;  // 8 bytes per block
 
-    // 64-bit block (2 x 32-bit): endpoints+indices
-    uint w0 = bc_words[bi * 2u + 0u];
-    uint w1 = bc_words[bi * 2u + 1u];
+    uint lowColor = inputBuffer.data[blockIndex];
+    uint highColor = inputBuffer.data[blockIndex + 1];
 
-    uint c0 = w0 & 0xFFFFu;
-    uint c1 = (w0 >> 16) & 0xFFFFu;
+    vec4 color0 = unpackColor(lowColor);
+    vec4 color1 = unpackColor(highColor);
 
-    vec3 C0 = color565(c0);
-    vec3 C1 = color565(c1);
+    half4 hcolor0 = half4(color0);  // Use half for speed
+    half4 hcolor1 = half4(color1);
 
-    vec3 P[4];
-    P[0] = C0;
-    P[1] = C1;
-    if (c0 > c1) {
-        P[2] = (2.0 * C0 + C1) / 3.0;
-        P[3] = (C0 + 2.0 * C1) / 3.0;
-    } else {
-        P[2] = (C0 + C1) / 2.0;
-        P[3] = vec3(0.0);
-    }
+    // Unroll interpolation
+    half4 colors[4];
+    colors[0] = hcolor0;
+    colors[1] = hcolor1;
+    colors[2] = hcolor0 * (2.0h / 3.0h) + hcolor1 * (1.0h / 3.0h);
+    colors[3] = hcolor0 * (1.0h / 3.0h) + hcolor1 * (2.0h / 3.0h);
 
-    for (uint t = 0u; t < 16u; ++t) {
-        uint idx = read2_32(w1, t * 2u);
-        vec3 rgb = P[idx];
-        uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, 1.0));
+    uint indices = inputBuffer.data[blockIndex + 2];
+
+    // Unroll pixel write with min/max to reduce branches
+    for (uint y = 0u; y < 4u; y++) {  // Unrolled
+        for (uint x = 0u; x < 4u; x++) {  // Unrolled
+            uint idx = (indices >> ((y * 4 + x) * 2)) & 0x3;
+            imageStore(outputImage, coord + ivec2(x, y), vec4(colors[idx]));
+        }
     }
 }
