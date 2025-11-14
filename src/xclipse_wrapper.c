@@ -10,16 +10,15 @@
 # error "Do not define PROVIDE_VK_GLOBALS for xclipse_wrapper.c; define it only for the canonical provider."
 #endif
 
-/* Local non-exported helpers. These avoid exporting the same public symbols. */
-
-static PFN_vkGetInstanceProcAddr my_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
+/* Local non-exported helpers. */
+static PFN_vkVoidFunction my_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     (void)instance;
     (void)pName;
-    return NULL;
+    return (PFN_vkVoidFunction)NULL;
 }
 
-static PFN_vkGetDeviceProcAddr my_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
+static PFN_vkVoidFunction my_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     (void)device;
     (void)pName;
-    return NULL;
+    return (PFN_vkVoidFunction)NULL;
 }
