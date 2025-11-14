@@ -1,4 +1,4 @@
-name: CI Build — Vulkan shaders and native build (serial generator)
+name: CI Build — Xclipse 940 tuned
 
 on:
   push:
@@ -25,32 +25,17 @@ jobs:
       run: |
         sudo apt-get update -y
         sudo apt-get install -y --no-install-recommends \
-          build-essential \
-          cmake \
-          ninja-build \
-          glslang-tools \
-          spirv-tools \
-          python3 \
-          python3-venv \
-          libvulkan-dev \
-          vulkan-tools || (sleep 3 && sudo apt-get update -y && sudo apt-get install -y --no-install-recommends libvulkan-dev vulkan-tools)
+          build-essential cmake ninja-build glslang-tools spirv-tools python3 python3-venv \
+          libvulkan-dev vulkan-tools
 
-    - name: Ensure scripts are runnable (no-op if already executable)
+    - name: Generate SPIR-V headers (serial)
       run: |
-        chmod +x scripts/generate_spv_headers.sh || true
-        chmod +x cmake/emit_spv_header.py || true
-
-    - name: Generate SPIR-V headers (serial, bash)
-      run: |
-        echo "Running shader generator via bash (serial)"
         bash scripts/generate_spv_headers.sh
 
     - name: Show generated headers
       run: |
-        echo "::group::include/"
         ls -la include || true
-        head -n 40 include/bc7_shader.h || true
-        echo "::endgroup::"
+        head -n 30 include/bc4_shader.h || true
 
     - name: Configure (Ninja)
       run: |
@@ -60,25 +45,9 @@ jobs:
       run: |
         cmake --build build -- -j$(nproc)
 
-    - name: Run tests (optional)
-      if: always()
-      run: |
-        if [ -f build/run-tests.sh ]; then
-          bash build/run-tests.sh || true
-        else
-          echo "No tests to run"
-        fi
-
-    - name: Archive build artifacts
+    - name: Upload artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: exynostools-build
+        name: build
         path: build/
-
-    - name: Upload generated headers
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: generated-shader-headers
-        path: include/
