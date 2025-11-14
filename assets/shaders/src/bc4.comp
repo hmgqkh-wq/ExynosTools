@@ -1,42 +1,42 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 #include "bc_common.glsl"
-layout(local_size_x = 64) in;
 
-// BC4: single-channel endpoints + 48-bit 3-bit indices
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-float chan_interp(uint c0, uint c1, uint idx, bool isSigned) {
-    float C0 = isSigned ? snormN(c0, 8) : float(c0) / 255.0;
-    float C1 = isSigned ? snormN(c1, 8) : float(c1) / 255.0;
-    if (c0 > c1) {
-        if (idx == 0u) return C0;
-        if (idx == 1u) return C1;
-        return ((8.0 - float(idx)) * C0 + (float(idx) - 1.0) * C1) / 7.0;
-    } else {
-        if (idx == 0u) return C0;
-        if (idx == 1u) return C1;
-        if (idx == 6u) return isSigned ? -1.0 : 0.0;
-        if (idx == 7u) return 1.0;
-        return ((6.0 - float(idx)) * C0 + (float(idx) - 1.0) * C1) / 5.0;
-    }
-}
+layout(set = 0, binding = 0) buffer InputBuffer {
+    uint data[];
+} inputBuffer;
+
+layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
 
 void main() {
-    uint bi = block_index();
-    uvec2 origin = block_origin(bi);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;
+    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 2;
 
-    uint r0r1 = bc_words[bi * 2u + 0u];
-    uint ri_lo = bc_words[bi * 2u + 1u];
-    uint ri_hi16 = (ri_lo >> 16) & 0xFFFFu; // if indices are split differently adjust accordingly
+    uint alphaBlock = inputBuffer.data[blockIndex];
+    uint indexBlock = inputBuffer.data[blockIndex + 1];
 
-    uint r0 = r0r1 & 0xFFu;
-    uint r1 = (r0r1 >> 8) & 0xFFu;
+    float a0 = unpackAlpha(alphaBlock & 0xFF);
+    float a1 = unpackAlpha((alphaBlock >> 8) & 0xFF);
 
-    bool isSigned = (PC.scale100 == 200u);
+    float alphas[8];
+    alphas[0] = a0;
+    alphas[1] = a1;
+    alphas[2] = (6.0 * a0 + 1.0 * a1) / 7.0;
+    alphas[3] = (5.0 * a0 + 2.0 * a1) / 7.0;
+    alphas[4] = (4.0 * a0 + 3.0 * a1) / 7.0;
+    alphas[5] = (3.0 * a0 + 4.0 * a1) / 7.0;
+    alphas[6] = (2.0 * a0 + 5.0 * a1) / 7.0;
+    alphas[7] = (1.0 * a0 + 6.0 * a1) / 7.0;
 
-    for (uint t = 0u; t < 16u; ++t) {
-        uint ridx = read3_48(ri_lo, ri_hi16, t * 3u);
-        float R = chan_interp(r0, r1, ridx, isSigned);
-        uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), vec4(R, R, R, 1.0));
+    uint indices = indexBlock;
+
+    for (uint y = 0u; y < 4u; y++) {
+        for (uint x = 0u; x < 4u; x++) {
+            uint idx = (indices >> ((y * 4 + x) * 3)) & 0x7;
+            vec4 color = vec4(alphas[idx], alphas[idx], alphas[idx], 1.0);
+            imageStore(outputImage, coord + ivec2(x, y), color);
+        }
     }
 }
