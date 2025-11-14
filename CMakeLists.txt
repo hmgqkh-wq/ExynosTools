@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 project(ExynosTools LANGUAGES C)
 
-# Build basics
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -9,21 +8,19 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(ENABLE_LTO "Enable link-time optimization" ON)
 option(SHADERS_REQUIRED "Fail if shader compiler or sources are missing" ON)
 
-# WG size controls for shaders and pipeline
-# - WG_SPEC_CONST_ID controls the specialization constant ID used by shaders (matches local_size_x_id)
-# - WG_SIZE_DEFAULT sets the default baked-in value (pipeline may override via specialization at runtime)
+# Workgroup size controls
 set(WG_SPEC_CONST_ID "0" CACHE STRING "Specialization constant ID for workgroup size")
 set(WG_SIZE_DEFAULT "64" CACHE STRING "Default workgroup size baked into shaders")
 
-# Shader list (keep lowercase filenames consistent with assets/shaders/src)
+# Shader list (all lowercase, matches assets/shaders/src)
 set(BC_SHADERS bc1 bc2 bc3 bc4 bc5 bc6h bc7)
 
 # Dependencies
 find_program(GLSLC_EXECUTABLE glslc REQUIRED)
 message(STATUS "Found glslc: ${GLSLC_EXECUTABLE}")
 
-# Generator for header from SPIR-V (creates <var>.h with <var> and <var>_len)
-set(GEN_HEADER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/generate_shader_header.cmake")
+# Generator script for headers
+set(GEN_HEADER_SCRIPT "${CMAKE_SOURCE_DIR}/generate_shader_header.cmake")
 if(NOT EXISTS "${GEN_HEADER_SCRIPT}")
   message(FATAL_ERROR "Missing required file: ${GEN_HEADER_SCRIPT}")
 endif()
@@ -35,7 +32,7 @@ file(MAKE_DIRECTORY "${GENERATED_DIR}")
 file(MAKE_DIRECTORY "${SHADER_HEADERS_DIR}")
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
 
-# Helper: compile a single shader to SPIR-V then to a C header
+# Helper function
 function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWER DEFINES)
   get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
   set(SPIRV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
@@ -77,18 +74,14 @@ foreach(s IN LISTS BC_SHADERS)
   set(HDR "${SHADER_HEADERS_DIR}/${s}_shader.h")
   set(VARNAME_LOWER "${s}_shader_spv")
 
-  # Shader compile defines:
-  # -DWORKGROUP_CONST_ID=<id> for local_size_x_id
-  # -DWG_SIZE_DEFAULT=<n> to bake a default into bc_common.glsl
   set(DEF "-DWORKGROUP_CONST_ID=${WG_SPEC_CONST_ID} -DWG_SIZE_DEFAULT=${WG_SIZE_DEFAULT}")
 
   compile_shader_to_header("${SRC}" "${HDR}" "${VARNAME_LOWER}" "${DEF}")
   list(APPEND GENERATED_HEADERS "${HDR}")
 endforeach()
 
-# Also include the shared header so glslc can resolve #include "bc_common.glsl"
-# (Note: bc_common.glsl is used by the shaders; it is not compiled directly.)
-if(SHADERS_REQUIRED AND NOT EXISTS "${CMAKE_SOURCE_DIR}/assets/shaders/src/bc_common.glsl}")
+# Check shared include exists
+if(SHADERS_REQUIRED AND NOT EXISTS "${CMAKE_SOURCE_DIR}/assets/shaders/src/bc_common.glsl")
   message(FATAL_ERROR "Missing shared shader header: assets/shaders/src/bc_common.glsl")
 endif()
 
@@ -140,7 +133,7 @@ set_target_properties(xeno_wrapper PROPERTIES
   PUBLIC_HEADER "src/xeno_wrapper.h"
 )
 
-# Compile-time visibility of WG settings (optional)
+# Compile-time visibility of WG settings
 target_compile_definitions(xeno_wrapper PRIVATE
   WG_SPEC_CONST_ID=${WG_SPEC_CONST_ID}
   WG_SIZE_DEFAULT=${WG_SIZE_DEFAULT}
