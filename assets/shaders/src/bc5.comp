@@ -1,8 +1,8 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x = WG_SIZE) in;
+layout(local_size_x = 64) in;
 
-// BC5: two BC4 blocks for R and G
+// BC5: two BC4 blocks (R and G)
 
 float chan_interp(uint c0, uint c1, uint idx, bool isSigned) {
     float C0 = isSigned ? snormN(c0, 8) : float(c0) / 255.0;
@@ -25,25 +25,26 @@ void main() {
     uvec2 origin = block_origin(bi);
 
     uint r0r1 = bc_words[bi * 4u + 0u];
-    uint ri0  = bc_words[bi * 4u + 1u];
+    uint ri_lo = bc_words[bi * 4u + 1u];
+    uint ri_hi16 = bc_words[bi * 4u + 2u] & 0xFFFFu;
+
     uint g0g1 = bc_words[bi * 4u + 2u];
-    uint gi0  = bc_words[bi * 4u + 3u];
+    uint gi_lo = bc_words[bi * 4u + 3u];
+    uint gi_hi16 = gi_lo >> 16;
 
     uint r0 = r0r1 & 0xFFu;
     uint r1 = (r0r1 >> 8) & 0xFFu;
     uint g0 = g0g1 & 0xFFu;
     uint g1 = (g0g1 >> 8) & 0xFFu;
 
-    uint64_t rIdx = uint64_t(ri0);
-    uint64_t gIdx = uint64_t(gi0);
-
     bool isSigned = (PC.scale100 == 200u);
 
     for (uint t = 0u; t < 16u; ++t) {
-        uint ridx = uint((rIdx >> (t * 3u)) & 7u);
-        uint gidx = uint((gIdx >> (t * 3u)) & 7u);
+        uint ridx = read3_48(ri_lo, ri_hi16, t * 3u);
+        uint gidx = read3_48(gi_lo, gi_hi16, t * 3u);
         float R = chan_interp(r0, r1, ridx, isSigned);
         float G = chan_interp(g0, g1, gidx, isSigned);
+
         uint px = t & 3u, py = t >> 2;
         store_px(ivec2(origin) + ivec2(px, py), vec4(R, G, 0.0, 1.0));
     }
