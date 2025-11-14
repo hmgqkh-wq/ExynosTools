@@ -7,31 +7,27 @@
 #include "bc6h_shader.h"
 #include "bc7_shader.h"
 #include "xeno_wrapper.h"
+#include "rt_path.h"
 
 #include <string.h>
-#include <pthread.h>            // pthread_create, pthread_detach
+#include <pthread.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_beta.h>
 
-#define PIPELINE_CACHE_PATH "/data/local/tmp/xeno_pipeline_cache.bin" // adjust for your environment
+#define PIPELINE_CACHE_PATH "/data/local/tmp/xeno_pipeline_cache.bin"
 
-// CPU fallback (placeholder)
 static VkResult cpu_fallback_decode(VkBuffer src_bc, VkImage dst_rgba, XenoBCFormat format, VkExtent3D extent) {
     XENO_LOGE("Fallback to CPU decode for format %d", format);
     return VK_SUCCESS;
 }
 
-// Adaptive scaling
 static float get_performance_scale(VkPhysicalDevice phys) {
     VkPhysicalDeviceMemoryProperties memProps;
     vkGetPhysicalDeviceMemoryProperties(phys, &memProps);
     return (memProps.memoryHeapCount > 4) ? 1.0f : 0.75f;
 }
 
-// Specialization constants: workgroup size
-typedef struct {
-    uint32_t wg_size;
-} SpecConsts;
+typedef struct { uint32_t wg_size; } SpecConsts;
 
 static VkResult create_shader_module(VkDevice device,
                                      const uint32_t* code_words,
@@ -41,11 +37,8 @@ static VkResult create_shader_module(VkDevice device,
         XENO_LOGE("SPIR-V validation failed");
         return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
-    VkShaderModuleCreateInfo createInfo = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = code_len_bytes,
-        .pCode = code_words
-    };
+    VkShaderModuleCreateInfo createInfo = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                            .codeSize = code_len_bytes, .pCode = code_words };
     return vkCreateShaderModule(device, &createInfo, NULL, module);
 }
 
@@ -62,6 +55,23 @@ static VkResult create_descriptor_set_layout(VkDevice device, VkDescriptorSetLay
     };
     VkDescriptorSetLayoutCreateInfo layoutInfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = bindings };
     return vkCreateDescriptorSetLayout(device, &layoutInfo, NULL, layout);
+}
+
+static VkResult create_bindless_layout(VkDevice device, VkDescriptorSetLayout* outLayout) {
+#ifdef ENABLE_BINDLESS
+    VkDescriptorSetLayoutBinding bindings[3] = {
+        { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1024, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = NULL },
+        { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  .descriptorCount = 1024, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = NULL },
+        { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,       .descriptorCount = 16,   .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = NULL }
+    };
+    VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                           .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+                                           .bindingCount = 3, .pBindings = bindings };
+    return vkCreateDescriptorSetLayout(device, &ci, NULL, outLayout);
+#else
+    (void)device; (void)outLayout;
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
+#endif
 }
 
 static VkResult create_pipeline_layout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout,
@@ -95,7 +105,6 @@ static VkResult create_compute_pipeline(VkDevice device,
     return vkCreateComputePipelines(device, pipelineCache, 1, &pipelineInfo, NULL, pipeline);
 }
 
-// Minimal image view creation for STORAGE_IMAGE binding
 static VkResult ensure_image_view(VkDevice device, VkImage image, VkFormat fmt, VkImageView* out_view) {
     if (*out_view != VK_NULL_HANDLE) return VK_SUCCESS;
     VkImageViewCreateInfo ci = {
@@ -109,7 +118,6 @@ static VkResult ensure_image_view(VkDevice device, VkImage image, VkFormat fmt, 
     return vkCreateImageView(device, &ci, NULL, out_view);
 }
 
-// Descriptor writes: bind buffer and image view
 static VkResult write_descriptor_set(VkDevice device, VkDescriptorSet set, VkBuffer src_bc, VkDeviceSize src_size,
                                      VkImageView dst_view, VkImageLayout layout) {
     VkDescriptorBufferInfo bufInfo = { .buffer = src_bc, .offset = 0, .range = src_size };
@@ -125,7 +133,6 @@ static VkResult write_descriptor_set(VkDevice device, VkDescriptorSet set, VkBuf
     return VK_SUCCESS;
 }
 
-// Async pipeline creation worker
 typedef struct {
     VkDevice device;
     VkPipelineCache cache;
@@ -149,11 +156,19 @@ out:
     return NULL;
 }
 
-// Descriptor allocation
 static VkResult allocate_descriptor_set(VkDevice device, VkDescriptorPool pool, VkDescriptorSetLayout layout, VkDescriptorSet* out_set) {
     VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool,
                                        .descriptorSetCount = 1, .pSetLayouts = &layout };
     return vkAllocateDescriptorSets(device, &ai, out_set);
+}
+
+static void detect_features(VkPhysicalDevice phys, XenoBCContext* ctx) {
+    VkPhysicalDeviceDescriptorIndexingFeatures indexing = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES };
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rt = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, .pNext = &indexing };
+    VkPhysicalDeviceFeatures2 feats2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rt };
+    vkGetPhysicalDeviceFeatures2(phys, &feats2);
+    ctx->hasDescriptorIndexing = indexing.descriptorBindingPartiallyBound && indexing.runtimeDescriptorArray;
+    ctx->hasRayTracing = rt.rayTracingPipeline;
 }
 
 XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
@@ -164,7 +179,8 @@ XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
     ctx->physicalDevice = phys;
     ctx->dstView = VK_NULL_HANDLE;
 
-    // Load persisted pipeline cache if present
+    detect_features(phys, ctx);
+
     if (xeno_wrapper_load_pipeline_cache(device, PIPELINE_CACHE_PATH, &ctx->pipelineCache) != VK_SUCCESS) {
         VkPipelineCacheCreateInfo cacheInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
         vkCreatePipelineCache(device, &cacheInfo, NULL, &ctx->pipelineCache);
@@ -173,10 +189,27 @@ XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
     if (create_descriptor_set_layout(device, &ctx->descriptorSetLayout) != VK_SUCCESS) goto cleanup;
     if (create_pipeline_layout(device, ctx->descriptorSetLayout, &ctx->pipelineLayout) != VK_SUCCESS) goto cleanup;
 
-    VkDescriptorPoolSize poolSizes[2] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 32},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  32}
-    };
+    if (ctx->hasDescriptorIndexing) {
+        if (create_bindless_layout(device, &ctx->bindlessLayout) == VK_SUCCESS) {
+            VkDescriptorPoolSize bindlessSizes[3] = {
+                { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1024 },
+                { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  1024 },
+                { VK_DESCRIPTOR_TYPE_SAMPLER,          16 }
+            };
+            VkDescriptorPoolCreateInfo bpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                               .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+                                               .maxSets = 1, .poolSizeCount = 3, .pPoolSizes = bindlessSizes };
+            if (vkCreateDescriptorPool(device, &bpi, NULL, &ctx->bindlessPool) == VK_SUCCESS) {
+                VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                                   .descriptorPool = ctx->bindlessPool,
+                                                   .descriptorSetCount = 1,
+                                                   .pSetLayouts = &ctx->bindlessLayout };
+                vkAllocateDescriptorSets(device, &ai, &ctx->bindlessSet);
+            }
+        }
+    }
+
+    VkDescriptorPoolSize poolSizes[2] = { {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 64} };
     VkDescriptorPoolCreateInfo poolInfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                             .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
                                             .maxSets = 64, .poolSizeCount = 2, .pPoolSizes = poolSizes };
@@ -188,7 +221,6 @@ XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
     const uint32_t* shaders[XENO_BC_FORMAT_COUNT] = { bc1_shader_spv, bc3_shader_spv, bc4_shader_spv, bc5_shader_spv, bc6h_shader_spv, bc7_shader_spv };
     const unsigned int lengths[XENO_BC_FORMAT_COUNT] = { bc1_shader_spv_len, bc3_shader_spv_len, bc4_shader_spv_len, bc5_shader_spv_len, bc6h_shader_spv_len, bc7_shader_spv_len };
 
-    // Async pipeline creation
     for (int i = 0; i < XENO_BC_FORMAT_COUNT; i++) {
         PipelineJob* J = (PipelineJob*)calloc(1, sizeof(PipelineJob));
         J->device = device; J->cache = ctx->pipelineCache; J->layout = ctx->pipelineLayout;
@@ -198,7 +230,8 @@ XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys) {
     }
 
     ctx->initialized = 1;
-    XENO_LOGI("bc_emulate: context created (async pipelines, spec constants, cache persist)");
+    XENO_LOGI("bc_emulate: context created (bindless %d, raytracing %d, spec const, cache persist)",
+              ctx->hasDescriptorIndexing, ctx->hasRayTracing);
     return ctx;
 
 cleanup:
@@ -209,11 +242,14 @@ cleanup:
 void xeno_bc_destroy_context(XenoBCContext* ctx) {
     if (!ctx) return;
     if (ctx->device) {
-        // Save cache before destroy
         xeno_wrapper_save_pipeline_cache(ctx->device, ctx->pipelineCache, PIPELINE_CACHE_PATH);
 
         for (int i = 0; i < XENO_BC_FORMAT_COUNT; i++)
             if (ctx->pipelines[i] != VK_NULL_HANDLE) vkDestroyPipeline(ctx->device, ctx->pipelines[i], NULL);
+
+        if (ctx->bindlessPool)    vkDestroyDescriptorPool(ctx->device, ctx->bindlessPool, NULL);
+        if (ctx->bindlessLayout)  vkDestroyDescriptorSetLayout(ctx->device, ctx->bindlessLayout, NULL);
+
         if (ctx->descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(ctx->device, ctx->descriptorPool, NULL);
         if (ctx->pipelineLayout  != VK_NULL_HANDLE) vkDestroyPipelineLayout(ctx->device, ctx->pipelineLayout, NULL);
         if (ctx->descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(ctx->device, ctx->descriptorSetLayout, NULL);
@@ -223,28 +259,28 @@ void xeno_bc_destroy_context(XenoBCContext* ctx) {
     free(ctx);
 }
 
+static VkFormat choose_target_format(VkPhysicalDevice phys) {
+    (void)phys;
+    return VK_FORMAT_R8G8B8A8_UNORM;
+}
+
 VkResult xeno_bc_decode_image(VkCommandBuffer cmd, XenoBCContext* ctx, VkBuffer src_bc, VkImage dst_rgba,
                               XenoBCFormat format, VkExtent3D extent, XenoSubresourceRange subres) {
     if (!ctx || !ctx->initialized) return VK_ERROR_INITIALIZATION_FAILED;
     if (format >= XENO_BC_FORMAT_COUNT) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
-    // Wait until pipeline is ready (simple check)
     if (ctx->pipelines[format] == VK_NULL_HANDLE) {
         XENO_LOGD("bc_emulate: pipeline not ready yet, yielding to CPU fallback");
         return cpu_fallback_decode(src_bc, dst_rgba, format, extent);
     }
 
-    // Create an image view for STORAGE_IMAGE
-    VkFormat assumedFormat = VK_FORMAT_R8G8B8A8_UNORM; // adjust if your shader expects different
-    if (ensure_image_view(ctx->device, dst_rgba, assumedFormat, &ctx->dstView) != VK_SUCCESS)
+    VkFormat targetFmt = choose_target_format(ctx->physicalDevice);
+    if (ensure_image_view(ctx->device, dst_rgba, targetFmt, &ctx->dstView) != VK_SUCCESS)
         return VK_ERROR_INITIALIZATION_FAILED;
 
-    // Allocate descriptor set
     VkDescriptorSet desc_set = VK_NULL_HANDLE;
     if (allocate_descriptor_set(ctx->device, ctx->descriptorPool, ctx->descriptorSetLayout, &desc_set) != VK_SUCCESS)
         return VK_ERROR_INITIALIZATION_FAILED;
-
-    // Write descriptors
     write_descriptor_set(ctx->device, desc_set, src_bc, VK_WHOLE_SIZE, ctx->dstView, VK_IMAGE_LAYOUT_GENERAL);
 
     float scale = get_performance_scale(ctx->physicalDevice);
@@ -266,7 +302,6 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd, XenoBCContext* ctx, VkBuffer 
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
                                  0, NULL, 0, NULL, 1, &preBarrier);
 
-            // Push constants: width, height, groupsX, reserved, wg_size, scale_100
             uint32_t wg = ctx->workgroup_size;
             uint32_t groupsX = (extent.width  + wg - 1) / wg;
             uint32_t groupsY = (extent.height + wg - 1) / wg;
@@ -293,6 +328,12 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd, XenoBCContext* ctx, VkBuffer 
                                  0, NULL, 0, NULL, 1, &postBarrier);
         }
     }
+
+#ifdef ENABLE_RAYTRACING
+    static XenoRT s_rt;
+    if (!s_rt.ready) xeno_rt_init(ctx->device, ctx->physicalDevice, &s_rt);
+    xeno_rt_dispatch(cmd, &s_rt, extent.width, extent.height);
+#endif
 
     XENO_LOGD("bc_emulate: GPU decode %ux%u (mips %u, layers %u) fmt %d wg %u scale %.2f",
               extent.width, extent.height, subres.mipLevelCount, subres.arrayLayerCount, format, ctx->workgroup_size, scale);
