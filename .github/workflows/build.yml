@@ -39,6 +39,15 @@ jobs:
       - name: Install to staging
         run: cmake --install build-android --prefix $(pwd)/staging
 
+      - name: Verify size
+        run: |
+          ls -lh staging/usr/lib/ || echo "No lib directory found"
+          sofile=staging/usr/lib/libxeno_wrapper.so
+          if [ ! -f "$sofile" ]; then echo "Missing libxeno_wrapper.so"; exit 1; fi
+          size=$(stat -c%s "$sofile")
+          echo "Size: $size bytes"
+          if [ "$size" -lt 80000 ]; then echo "Shared object too small (<80KB)"; exit 1; fi
+
       - name: Prepare package layout
         run: |
           mkdir -p pkg/usr/lib pkg/usr/share pkg/etc/exynostools pkg/profiles/winlator pkg/assets/shaders/decode
