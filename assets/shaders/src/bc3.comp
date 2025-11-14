@@ -2,7 +2,6 @@
 #include "bc_common.glsl"
 layout(local_size_x_id = 0) in;
 
-// BC3: alpha endpoints + 48 bits alpha indices (3 bits per texel) + BC1 color block.
 float alpha_interp(uint a0, uint a1, uint idx) {
     float A0 = float(a0) / 255.0;
     float A1 = float(a1) / 255.0;
@@ -30,17 +29,14 @@ void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    // Alpha block: a0,a1, then 48 bits of 3-bit indices
     uint a0a1  = bc_words[bi * 4u + 0u];
     uint aIdx0 = bc_words[bi * 4u + 1u];
     uint aIdx1 = bc_words[bi * 4u + 2u];
 
     uint a0 = a0a1 & 0xffu;
     uint a1 = (a0a1 >> 8) & 0xffu;
-    // Pack 64-bit from two dwords; only 48 bits used
     uint64_t aBits = uint64_t(aIdx0) | (uint64_t(aIdx1 & 0xffffu) << 32);
 
-    // Color block (BC1)
     uint c0w = bc_words[bi * 4u + 2u];
     uint c1w = bc_words[bi * 4u + 3u];
     uint c0 = c0w & 0xffffu;
