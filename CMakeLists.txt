@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.16)
-
 project(ExynosTools C)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -10,10 +9,12 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Source / include layout
 set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
 set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
 set(GENERATED_SPV_DIR "${CMAKE_BINARY_DIR}/generated_spv")
 
+# Includes: repo include, src, and generated SPV headers (always required)
 include_directories(
   "${INCLUDE_DIR}"
   "${SRC_DIR}"
@@ -21,12 +22,10 @@ include_directories(
 )
 
 add_compile_options(
-  -Wall
-  -Wextra
-  -Wno-unused-parameter
-  $<$<CONFIG:Release>:-O3>
+  -Wall -Wextra -Wno-unused-parameter $<$<CONFIG:Release>:-O3>
 )
 
+# Collect sources (only add files that exist to avoid partial-checkout errors)
 set(PROJECT_SOURCES
   ${SRC_DIR}/main.c
   ${SRC_DIR}/logging.c
@@ -44,17 +43,19 @@ foreach(f ${PROJECT_SOURCES})
   if(EXISTS ${f})
     list(APPEND EXISTING_SOURCES ${f})
   else()
-    message(STATUS "Notice: source not found at configure time: ${f}")
+    message(STATUS "Notice: missing source at configure time: ${f}")
   endif()
 endforeach()
 
 add_executable(ExynosTools ${EXISTING_SOURCES})
 
+# Defines tuned for Xclipse 940 and staging pool size (adjust in CI or cache if needed)
 target_compile_definitions(ExynosTools PRIVATE
   EXYNOSTOOLS_STAGING_POOL_SIZE=1048576
   XCLIPSE_940_OPTIMIZE=1
 )
 
+# Link Vulkan if available
 find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND)
   pkg_check_modules(VULKAN_PKG QUIET vulkan)
@@ -74,10 +75,12 @@ else()
   endif()
 endif()
 
+# Threads
 find_package(Threads)
 if(THREADS_FOUND)
   target_link_libraries(ExynosTools PRIVATE Threads::Threads)
 endif()
 
+message(STATUS "Configured ExynosTools")
 message(STATUS "Include dirs: ${INCLUDE_DIR}, ${SRC_DIR}, ${GENERATED_SPV_DIR}")
 message(STATUS "Sources: ${EXISTING_SOURCES}")
