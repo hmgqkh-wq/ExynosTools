@@ -30,12 +30,17 @@ foreach(i RANGE 0 ${_num_words} 1)
   set(_w 0)
   foreach(b RANGE 0 3)
     math(EXPR idx "${off} + ${b}")
-    if(idx GREATER_EQUAL _len_bytes) break()
-    string(SUBSTRING "${_BIN_DATA}" ${idx} 1 _byte)
-    execute_process(COMMAND /bin/printf "%d" "'${_byte}" OUTPUT_VARIABLE _bval OUTPUT_STRIP_TRAILING_WHITESPACE)
-    math(EXPR _w "${_w} + (${_bval} << (${b} * 8))")
+    if(idx LESS _len_bytes)
+      string(SUBSTRING "${_BIN_DATA}" ${idx} 1 _byte)
+      execute_process(COMMAND /bin/printf "%d" "'${_byte}"
+        OUTPUT_VARIABLE _bval
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+      math(EXPR _w "${_w} + (${_bval} << (${b} * 8))")
+    endif()
   endforeach()
-  execute_process(COMMAND /bin/printf "%08x" "${_w}" OUTPUT_VARIABLE _hex OUTPUT_STRIP_TRAILING_WHITESPACE)
+  execute_process(COMMAND /bin/printf "%08x" "${_w}"
+    OUTPUT_VARIABLE _hex
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
   string(APPEND _words "0x${_hex}, ")
 endforeach()
 
