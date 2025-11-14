@@ -36,3 +36,10 @@ endforeach()
 include_directories("${GENERATED_INCLUDE_DIR}")
 message(STATUS "Using centralized shader generator: ${SHADER_SCRIPT}")
 message(STATUS "Generated headers dir: ${GENERATED_INCLUDE_DIR}")
+add_custom_target(gen_shaders
+  COMMAND ${CMAKE_COMMAND} -E echo "Running centralized shader generator script"
+  COMMAND ${CMAKE_COMMAND} -E env bash "${CMAKE_SOURCE_DIR}/scripts/generate_spv_headers.sh"
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Generate SPIR-V and C headers for shaders (serial)"
+  VERBATIM
+)
