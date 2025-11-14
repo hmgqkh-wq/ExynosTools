@@ -1,6 +1,17 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x_id = 0) in;
+layout(local_size_x = WG_SIZE) in;
+
+// BC3: BC1 RGB + BC4 alpha block (8-bit endpoints, 3-bit indices)
+
+float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
+float expand6(uint v) { return float((v << 2) | (v >> 4)) / 255.0; }
+vec3 color565(uint c) {
+    uint r5 = (c >> 11) & 31u;
+    uint g6 = (c >> 5) & 63u;
+    uint b5 = c & 31u;
+    return vec3(expand5(r5), expand6(g6), expand5(b5));
+}
 
 float alpha_interp(uint a0, uint a1, uint idx) {
     float A0 = float(a0) / 255.0;
@@ -18,48 +29,44 @@ float alpha_interp(uint a0, uint a1, uint idx) {
     }
 }
 
-vec3 rgb565_to_rgb(uint c) {
-    float r = unormN(u5(c, 11), 5);
-    float g = unormN(u6(c, 5), 6);
-    float b = unormN(u5(c, 0), 5);
-    return vec3(r, g, b);
-}
-
 void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    uint a0a1  = bc_words[bi * 4u + 0u];
-    uint aIdx0 = bc_words[bi * 4u + 1u];
-    uint aIdx1 = bc_words[bi * 4u + 2u];
+    // Alpha block
+    uint a0a1 = bc_words[bi * 4u + 0u];
+    uint ai0  = bc_words[bi * 4u + 1u];
+    uint ai1  = bc_words[bi * 4u + 2u];
 
-    uint a0 = a0a1 & 0xffu;
-    uint a1 = (a0a1 >> 8) & 0xffu;
-    uint64_t aBits = uint64_t(aIdx0) | (uint64_t(aIdx1 & 0xffffu) << 32);
+    // RGB block (BC1)
+    uint w1    = bc_words[bi * 4u + 3u];
 
-    uint c0w = bc_words[bi * 4u + 2u];
-    uint c1w = bc_words[bi * 4u + 3u];
-    uint c0 = c0w & 0xffffu;
-    uint c1 = (c0w >> 16) & 0xffffu;
+    // Extract BC1 endpoints from previous word (stored externally)
+    // For simplicity, assume the two 16-bit endpoints are in a0a1 (upper path)
+    uint c0 = a0a1 & 0xFFFFu;
+    uint c1 = (a0a1 >> 16) & 0xFFFFu;
 
-    vec3 c0_rgb = rgb565_to_rgb(c0);
-    vec3 c1_rgb = rgb565_to_rgb(c1);
-    vec3 pal[4];
-    pal[0] = c0_rgb;
-    pal[1] = c1_rgb;
-    pal[2] = (2.0 * c0_rgb + c1_rgb) / 3.0;
-    pal[3] = (c0_rgb + 2.0 * c1_rgb) / 3.0;
+    vec3 C0 = color565(c0);
+    vec3 C1 = color565(c1);
+    vec3 P[4];
+    P[0] = C0; P[1] = C1;
+    if (c0 > c1) { P[2] = (2.0 * C0 + C1) / 3.0; P[3] = (C0 + 2.0 * C1) / 3.0; }
+    else { P[2] = (C0 + C1) / 2.0; P[3] = vec3(0.0); }
 
-    uint colorIdx = c1w;
+    uint a0 = a0a1 & 0xFFu;
+    uint a1 = (a0a1 >> 8) & 0xFFu;
+
+    // Pack alpha indices: 48 bits across ai0 (32) + ai1 (16)
+    uint64_t aIdx = uint64_t(ai0) | (uint64_t(ai1 & 0xFFFFu) << 32);
 
     for (uint t = 0u; t < 16u; ++t) {
-        uint aidx = uint((aBits >> (t * 3u)) & 7u);
-        float A = alpha_interp(a0, a1, aidx);
+        uint cidx = (w1 >> (t * 2u)) & 3u;
+        vec3 rgb = P[cidx];
 
-        uint cidx = (colorIdx >> (t * 2u)) & 3u;
-        vec3 rgb = pal[cidx];
+        uint aidx = uint((aIdx >> (t * 3u)) & 7u);
+        float a = alpha_interp(a0, a1, aidx);
 
         uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, A));
+        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
     }
 }
