@@ -1,109 +1,52 @@
-include(cmake/enable_xeno_globals.cmake)
-cmake_minimum_required(VERSION 3.18)
-project(ExynosTools LANGUAGES C CXX)
+# SPDX-License-Identifier: MIT
+# CMakeLists.txt - build ExynosTools as a shared library (ready to copy)
+cmake_minimum_required(VERSION 3.15)
+project(ExynosTools C)
 
-# C++ standard
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Basic build settings
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
 
-# Output directories
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-
-# Include paths
-include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/src
-    ${CMAKE_CURRENT_BINARY_DIR}/shaders
-)
-
-# Source files
+# Source collection: include all .c under src/ (adjust if you have special exclusions)
 file(GLOB_RECURSE EXYNOSTOOLS_SOURCES
-    src/*.cpp
-    src/*.c
+    "${CMAKE_SOURCE_DIR}/src/*.c"
 )
 
-# Executable
-add_executable(exynostools ${EXYNOSTOOLS_SOURCES})
-
-# Vulkan
-find_package(Vulkan REQUIRED)
-target_link_libraries(exynostools PRIVATE Vulkan::Vulkan)
-
-# Shader source and output directories
-set(SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/src)
-set(SHADER_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
-file(MAKE_DIRECTORY ${SHADER_OUTPUT_DIR})
-
-# Shader files to compile (.comp only)
-set(SHADER_SOURCES
-    bc1.comp
-    bc2.comp
-    bc3.comp
-    bc4.comp
-    bc5.comp
-    bc6h.comp
-    bc7.comp
+# Public include directories
+include_directories(
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/build-android/shaders/src"
 )
 
-# Compile each shader to SPIR-V
-foreach(SHADER_FILE ${SHADER_SOURCES})
-    set(INPUT_FILE ${SHADER_SRC_DIR}/${SHADER_FILE})
-    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
-    set(OUTPUT_FILE ${SHADER_OUTPUT_DIR}/${SHADER_NAME}.spv)
+# Ensure cmake/enable_xeno_globals.cmake runs (it marks xeno_wrapper.c to export globals)
+if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/enable_xeno_globals.cmake")
+    include("${CMAKE_SOURCE_DIR}/cmake/enable_xeno_globals.cmake")
+endif()
 
-    add_custom_command(
-        OUTPUT ${OUTPUT_FILE}
-        COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader: ${SHADER_FILE}"
-        COMMAND glslc ${INPUT_FILE} -o ${OUTPUT_FILE}
-        DEPENDS ${INPUT_FILE} ${SHADER_SRC_DIR}/bc_common.glsl
-        COMMENT "Compiling ${SHADER_FILE} to SPIR-V"
-        VERBATIM
-    )
+# Create the shared library target
+add_library(exynostools SHARED ${EXYNOSTOOLS_SOURCES})
 
-    list(APPEND COMPILED_SHADERS ${OUTPUT_FILE})
-endforeach()
+# Compile definitions and platform-specific flags
+target_compile_definitions(exynostools PRIVATE ANDROID)
+# Keep format-security warnings as in CI; change if necessary:
+target_compile_options(exynostools PRIVATE -Wformat -Werror=format-security)
 
-# Shader build target
-add_custom_target(generated_shaders ALL DEPENDS ${COMPILED_SHADERS})
-add_dependencies(exynostools generated_shaders)
+# Link against typical Android libs (adjust if your project needs more)
+find_library(LOG_LIB log)
+find_library(ANDROID_LIB android)
 
-# Header generation from SPIR-V
-set(SHADER_HEADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
-file(MAKE_DIRECTORY ${SHADER_HEADER_DIR})
+if(LOG_LIB)
+    target_link_libraries(exynostools PRIVATE ${LOG_LIB})
+endif()
+if(ANDROID_LIB)
+    target_link_libraries(exynostools PRIVATE ${ANDROID_LIB})
+endif()
 
-function(spv_to_header SPV_FILE HEADER_FILE SYMBOL_NAME)
-    add_custom_command(
-        OUTPUT ${HEADER_FILE}
-        COMMAND ${CMAKE_COMMAND}
-            -DINPUT=${SPV_FILE}
-            -DOUTPUT=${HEADER_FILE}
-            -DSYMBOL=${SYMBOL_NAME}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/spv_to_header.cmake
-        DEPENDS ${SPV_FILE}
-        COMMENT "Generating header ${HEADER_FILE} from ${SPV_FILE}"
-        VERBATIM
-    )
-    set(GENERATED_HEADERS ${GENERATED_HEADERS} ${HEADER_FILE} PARENT_SCOPE)
-endfunction()
+# Install rules (optional): place the produced .so into package_temp/usr/lib
+install(TARGETS exynostools
+    LIBRARY DESTINATION package_temp/usr/lib
+)
 
-# Generate headers for each shader
-set(SHADER_NAMES bc1 bc2 bc3 bc4 bc5 bc6h bc7)
-
-foreach(NAME ${SHADER_NAMES})
-    set(SPV ${SHADER_OUTPUT_DIR}/${NAME}.spv)
-    set(HDR ${SHADER_HEADER_DIR}/${NAME}_shader.h)
-    set(SYM ${NAME}_spv)
-    spv_to_header(${SPV} ${HDR} ${SYM})
-endforeach()
-
-# Header build target
-add_custom_target(generated_shader_headers ALL DEPENDS ${GENERATED_HEADERS})
-add_dependencies(exynostools generated_shader_headers)
-
-# Include generated headers
-target_include_directories(exynostools PRIVATE ${SHADER_HEADER_DIR})
-
-# Optional install step
-install(DIRECTORY ${SHADER_OUTPUT_DIR}/ DESTINATION shaders)
-install(TARGETS exynostools RUNTIME DESTINATION bin)
+# Export compile commands for tooling (optional)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
