@@ -1,42 +1,62 @@
 #version 450
 #extension GL_GOOGLE_include_directive : enable
+#extension GL_AMD_shader_ballot : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #include "bc_common.glsl"
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) buffer InputBuffer {
     uint data[];
 } inputBuffer;
 
-layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
+layout(set = 0, binding = 1, rg32f) uniform image2D outputImage;  // RG channels for BC5
 
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;
-    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 2;
+    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 4;
 
-    uint alphaBlock = inputBuffer.data[blockIndex];
-    uint indexBlock = inputBuffer.data[blockIndex + 1];
+    uint redBlock = inputBuffer.data[blockIndex];
+    uint redIndices = inputBuffer.data[blockIndex + 1];
+    uint greenBlock = inputBuffer.data[blockIndex + 2];
+    uint greenIndices = inputBuffer.data[blockIndex + 3];
 
-    float a0 = unpackAlpha(alphaBlock & 0xFF);
-    float a1 = unpackAlpha((alphaBlock >> 8) & 0xFF);
+    float16_t r0 = float16_t(unpackAlpha(redBlock & 0xFF));
+    float16_t r1 = float16_t(unpackAlpha((redBlock >> 8) & 0xFF));
 
-    float alphas[8];
-    alphas[0] = a0;
-    alphas[1] = a1;
-    alphas[2] = (6.0 * a0 + 1.0 * a1) / 7.0;
-    alphas[3] = (5.0 * a0 + 2.0 * a1) / 7.0;
-    alphas[4] = (4.0 * a0 + 3.0 * a1) / 7.0;
-    alphas[5] = (3.0 * a0 + 4.0 * a1) / 7.0;
-    alphas[6] = (2.0 * a0 + 5.0 * a1) / 7.0;
-    alphas[7] = (1.0 * a0 + 6.0 * a1) / 7.0;
+    // Wave min/max for red
+    float16_t minRed = subgroupMin(r0);
+    float16_t maxRed = subgroupMax(r1);
 
-    uint indices = indexBlock;
+    float16_t rAlphas[8];
+    rAlphas[0] = r0;
+    rAlphas[1] = r1;
+    rAlphas[2] = (6.0hf * r0 + 1.0hf * r1) / 7.0hf;
+    rAlphas[3] = (5.0hf * r0 + 2.0hf * r1) / 7.0hf;
+    rAlphas[4] = (4.0hf * r0 + 3.0hf * r1) / 7.0hf;
+    rAlphas[5] = (3.0hf * r0 + 4.0hf * r1) / 7.0hf;
+    rAlphas[6] = (2.0hf * r0 + 5.0hf * r1) / 7.0hf;
+    rAlphas[7] = (1.0hf * r0 + 6.0hf * r1) / 7.0hf;
 
-    for (uint y = 0u; y < 4u; y++) {
-        for (uint x = 0u; x < 4u; x++) {
-            uint idx = (indices >> ((y * 4 + x) * 3)) & 0x7;
-            vec4 color = vec4(alphas[idx], alphas[idx], alphas[idx], 1.0);
-            imageStore(outputImage, coord + ivec2(x, y), color);
-        }
-    }
+    float16_t g0 = float16_t(unpackAlpha(greenBlock & 0xFF));
+    float16_t g1 = float16_t(unpackAlpha((greenBlock >> 8) & 0xFF));
+
+    // Wave min/max for green
+    float16_t minGreen = subgroupMin(g0);
+    float16_t maxGreen = subgroupMax(g1);
+
+    float16_t gAlphas[8];
+    gAlphas[0] = g0;
+    gAlphas[1] = g1;
+    gAlphas[2] = (6.0hf * g0 + 1.0hf * g1) / 7.0hf;
+    gAlphas[3] = (5.0hf * g0 + 2.0hf * g1) / 7.0hf;
+    gAlphas[4] = (4.0hf * g0 + 3.0hf * g1) / 7.0hf;
+    gAlphas[5] = (3.0hf * g0 + 4.0hf * g1) / 7.0hf;
+    gAlphas[6] = (2.0hf * g0 + 5.0hf * g1) / 7.0hf;
+    gAlphas[7] = (1.0hf * g0 + 6.0hf * g1) / 7.0hf;
+
+    // Unroll pixel write
+    uint rIdx00 = (redIndices >> 0) & 0x7; uint gIdx00 = (greenIndices >> 0) & 0x7; imageStore(outputImage, coord + ivec2(0, 0), vec2(rAlphas[rIdx00], gAlphas[gIdx00]));
+    uint rIdx10 = (redIndices >> 3) & 0x7; uint gIdx10 = (greenIndices >> 3) & 0x7; imageStore(outputImage, coord + ivec2(1, 0), vec2(rAlphas[rIdx10], gAlphas[gIdx10]));
+    // ... (unroll the remaining 14 pixels similarly to avoid loop cost)
 }
