@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # scripts/generate_spv_headers.sh
-# Compile all shaders (Vulkan), optionally run spirv-opt, emit C headers.
-# This script runs serially and exits nonzero on any failure.
-
+# Serial, defensive SPIR-V generation: compile -> validate -> optional optimize -> emit header.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SH_DIR="$ROOT/assets/shaders/src"
@@ -13,17 +11,17 @@ PY="$ROOT/cmake/emit_spv_header.py"
 
 mkdir -p "$OUT_DIR" "$TMP_DIR"
 
+# Required tools
 command -v glslangValidator >/dev/null 2>&1 || { echo "ERROR: glslangValidator not found. Install glslang-tools."; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
 
 SPIRV_OPT_BIN="$(command -v spirv-opt || true)"
-if [ -n "$SPIRV_OPT_BIN" ]; then
-  echo "spirv-opt found at: $SPIRV_OPT_BIN"
-else
-  echo "spirv-opt not found; skipping SPIR-V optimization"
-fi
+SPIRV_VAL_BIN="$(command -v spirv-val || true)"
 
-# Process shaders serially to avoid races
+echo "Generator starting. Shader dir: $SH_DIR"
+[ -n "$SPIRV_OPT_BIN" ] && echo "spirv-opt: $SPIRV_OPT_BIN" || echo "spirv-opt: not found (skipping optimization)"
+[ -n "$SPIRV_VAL_BIN" ] && echo "spirv-val: $SPIRV_VAL_BIN" || echo "spirv-val: not found (skipping validation)"
+
 for src in "$SH_DIR"/*.{comp,glsl}; do
   [ -f "$src" ] || continue
   name="$(basename "$src")"
@@ -32,20 +30,71 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
   opt="$TMP_DIR/${base}.opt.spv"
   out="$raw"
 
-  echo "----"
-  echo "Compiling: $name"
-  glslangValidator -V --target-env vulkan1.2 "-I${SH_DIR}" -o "$raw" "$src"
-
-  if [ -n "$SPIRV_OPT_BIN" ]; then
-    echo "Optimizing: $raw -> $opt (via $SPIRV_OPT_BIN)"
-    "$SPIRV_OPT_BIN" --strip-debug -O "$raw" -o "$opt" || { echo "ERROR: spirv-opt failed for $raw"; exit 1; }
-    [ -f "$opt" ] && out="$opt"
+  echo
+  echo "=== Processing shader: $name ==="
+  echo "1) Compile -> SPV"
+  if ! glslangValidator -V --target-env vulkan1.2 "-I${SH_DIR}" -o "$raw" "$src"; then
+    echo "ERROR: glslangValidator failed for $src"
+    echo "---- glslangValidator stderr (last 200 lines) ----"
+    exit 1
   fi
 
-  hdr="$OUT_DIR/${base}_shader.h"
-  echo "Emitting header: $hdr from ${out}"
-  python3 "$PY" "$out" "$hdr" "${base}_spv" || { echo "ERROR: emit_spv_header.py failed for $out"; exit 1; }
+  # Basic sanity: SPV file must be non-empty and size multiple of 4
+  if [ ! -s "$raw" ]; then
+    echo "ERROR: Generated SPV empty: $raw"
+    exit 1
+  fi
+  rem=$(( $(stat -c%s "$raw") % 4 ))
+  if [ "$rem" -ne 0 ]; then
+    echo "ERROR: SPV size not multiple of 4: $raw (size $(stat -c%s "$raw"))"
+    exit 1
+  fi
+
+  # Optional validation
+  if [ -n "$SPIRV_VAL_BIN" ]; then
+    echo "2) Validate SPV with spirv-val"
+    if ! "$SPIRV_VAL_BIN" "$raw"; then
+      echo "WARNING: spirv-val failed for $raw; attempting one retry after whitespace-safe copy"
+      cp "$raw" "${raw}.retry"
+      if ! "$SPIRV_VAL_BIN" "${raw}.retry"; then
+        echo "ERROR: spirv-val still failing for $raw; printing first 200 bytes in hex for debugging"
+        hexdump -n 200 -C "$raw" || true
+        exit 1
+      else
+        echo "spirv-val passed on retry"
+      fi
+    fi
+  fi
+
+  # Optional optimization (safe: fail -> skip)
+  if [ -n "$SPIRV_OPT_BIN" ]; then
+    echo "3) Optimize SPV with spirv-opt"
+    if "$SPIRV_OPT_BIN" --strip-debug -O "$raw" -o "$opt"; then
+      echo "spirv-opt succeeded -> $opt"
+      out="$opt"
+      # Validate optimized SPV too if spirv-val available
+      if [ -n "$SPIRV_VAL_BIN" ]; then
+        if ! "$SPIRV_VAL_BIN" "$out"; then
+          echo "WARNING: spirv-val failed on optimized SPV; using unoptimized SPV"
+          out="$raw"
+        fi
+      fi
+    else
+      echo "WARNING: spirv-opt failed for $raw; continuing with raw SPV"
+      out="$raw"
+    fi
+  fi
+
+  # Emit header
+  echo "4) Emit C header from SPV -> $OUT_DIR/${base}_shader.h"
+  if ! python3 "$PY" "$out" "$OUT_DIR/${base}_shader.h" "${base}_spv"; then
+    echo "ERROR: emit_spv_header.py failed for $out"
+    exit 1
+  fi
+
+  echo "=== Done: $name ==="
 done
 
+echo
 echo "All shaders processed. Headers in: $OUT_DIR"
 ls -la "$OUT_DIR" || true
