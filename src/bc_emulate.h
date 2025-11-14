@@ -2,6 +2,7 @@
 // ExynosTools: BC decode interface
 
 #pragma once
+#include <stdint.h>
 #include <vulkan/vulkan.h>
 
 #ifdef __cplusplus
