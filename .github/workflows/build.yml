@@ -43,7 +43,6 @@ jobs:
           set -euo pipefail
           OUT_DIR=build-android/generated_spv
           mkdir -p "$OUT_DIR"
-          # Update SHADER_SRC_DIR to where your .comp files live in the repo
           SHADER_SRC_DIR=assets/shaders/src
           NAMES="bc1 bc2 bc3 bc4 bc5 bc6h bc7"
           for NAME in $NAMES; do
@@ -60,7 +59,9 @@ jobs:
             fi
           done
 
-      - name: Configure (CMake Android arm64 with ray tracing)
+      - name: Configure (CMake Android arm64)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
           cmake -S . -B build-android \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
