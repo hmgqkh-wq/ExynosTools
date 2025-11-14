@@ -1,0 +1,122 @@
+name: CI Build — Generate shaders and build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Generate SPIR-V headers and build (ubuntu-latest)
+    runs-on: ubuntu-latest
+    env:
+      CMAKE_BUILD_TYPE: Release
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y build-essential cmake ninja-build glslang-tools python3 python3-distutils pkg-config
+
+    - name: Show repo layout (debug)
+      run: |
+        echo "Top-level files:"
+        ls -la
+        echo ""
+        echo "cmake folder:"
+        ls -la cmake || true
+        echo ""
+        echo "shader sources:"
+        ls -la assets/shaders/src || true
+
+    - name: Generate SPIR-V headers (project script preferred)
+      run: |
+        set -euo pipefail
+        # Prefer project supplied script
+        if [ -x ./scripts/generate_spv_headers.sh ]; then
+          echo "Running project script: scripts/generate_spv_headers.sh"
+          bash ./scripts/generate_spv_headers.sh
+        else
+          # Try CMake gen_shaders target if present
+          mkdir -p build-generate
+          cmake -S . -B build-generate
+          if cmake --build build-generate --target gen_shaders -- -j 2 2>/dev/null; then
+            echo "Ran gen_shaders target"
+          else
+            echo "Falling back to inline generator"
+            mkdir -p build_generated_spv include
+            for f in assets/shaders/src/*.{comp,glsl}; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f" | sed 's/\.comp$//;s/\.glsl$//')
+              echo "Compiling $f -> build_generated_spv/${base}.spv"
+              glslangValidator -V "$f" -o "build_generated_spv/${base}.spv"
+              python3 - <<'PY' "build_generated_spv/${base}.spv" "include/${base}_shader.h" "${base}_spv"
+import sys,struct,os
+in_spv,out_h,sym = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(in_spv,"rb") as fh: data=fh.read()
+pad=(4-(len(data)%4))%4
+if pad: data+=b'\x00'*pad
+words=struct.unpack("<"+"I"*(len(data)//4),data)
+guard=os.path.basename(out_h).upper().replace('.','_').replace('-','_') + "_"
+with open(out_h,"w",newline="\n") as oh:
+    oh.write("// SPDX-License-Identifier: MIT\n")
+    oh.write("/* Generated from %s. Do not edit by hand. */\n\n" % os.path.basename(in_spv))
+    oh.write("#ifndef %s\n#define %s\n\n" % (guard,guard))
+    oh.write("#include <stddef.h>\n#include <stdint.h>\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
+    oh.write("static const uint32_t %s[] = {\n" % sym)
+    for i in range(0,len(words),8):
+        oh.write("    " + ", ".join("0x%08xu" % w for w in words[i:i+8]))
+        oh.write(",\n" if i+8 < len(words) else "\n")
+    oh.write("};\n\n")
+    oh.write("static const size_t %s_size = sizeof(%s);\n\n" % (sym,sym))
+    oh.write("#ifdef __cplusplus\n}\n#endif\n\n")
+    oh.write("#endif /* %s */\n" % guard)
+PY
+            done
+          fi
+        fi
+
+    - name: Show generated headers
+      run: |
+        echo "include/ listing:"
+        ls -la include || true
+        echo ""
+        echo "generated_spv build dir listing:"
+        ls -la build_generated_spv || true
+        echo ""
+        head -n 40 include/bc1_shader.h || true
+
+    - name: Configure (native)
+      run: |
+        mkdir -p build
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -G Ninja
+        cmake --build build --target help || true
+
+    - name: Build (native)
+      run: |
+        cmake --build build -- -j$(nproc)
+
+    - name: Run quick smoke tests (if any)
+      run: |
+        if [ -x bin/xenotools-doctor.sh ]; then
+          echo "Running xenotools-doctor.sh"
+          bash bin/xenotools-doctor.sh || true
+        else
+          echo "No quick smoke test present"
+        fi
+
+    - name: Archive build artifacts (optional)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: exynostools-build
+        path: build/
