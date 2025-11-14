@@ -2,41 +2,44 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "bc_common.glsl"
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;  // Optimized for RDNA3 cache
+// BC1: RGB only (opaque or 1-bit alpha via "transparent" when c0 <= c1).
+// Input layout: 2 uints per block: endpoints(32-bit), indices(32-bit).
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) buffer InputBuffer {
-    uint data[];
-} inputBuffer;
-
+layout(set = 0, binding = 0) readonly buffer InputBuffer { uint data[]; } inputBuffer;
 layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
 
-void main() {
-    ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;  // Process 4x4 block
-    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 2;  // 8 bytes per block
+void main()
+{
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 base = b * 4;
+    ivec2 dim = imageSize(outputImage);
+    if (base.x >= dim.x || base.y >= dim.y) return;
 
-    uint lowColor = inputBuffer.data[blockIndex];
-    uint highColor = inputBuffer.data[blockIndex + 1];
+    int blocksX = (dim.x + 3) >> 2;
+    int blockIndex = b.y * blocksX + b.x;
+    int d = blockIndex * 2;
 
-    vec4 color0 = unpackColor(lowColor);
-    vec4 color1 = unpackColor(highColor);
+    uint endpoints32 = inputBuffer.data[d + 0];
+    uint indices32   = inputBuffer.data[d + 1];
 
-    half4 hcolor0 = half4(color0);  // Use half for speed
-    half4 hcolor1 = half4(color1);
+    // endpoints packed: low 16 = C0, high 16 = C1
+    uvec2 endpoints = uvec2(endpoints32 & 0xFFFFu, (endpoints32 >> 16) & 0xFFFFu);
+    vec3 pal[4];
+    bool opaque;
+    bc1Palette(endpoints, pal, opaque);
 
-    // Unroll interpolation
-    half4 colors[4];
-    colors[0] = hcolor0;
-    colors[1] = hcolor1;
-    colors[2] = hcolor0 * (2.0h / 3.0h) + hcolor1 * (1.0h / 3.0h);
-    colors[3] = hcolor0 * (1.0h / 3.0h) + hcolor1 * (2.0h / 3.0h);
-
-    uint indices = inputBuffer.data[blockIndex + 2];
-
-    // Unroll pixel write with min/max to reduce branches
-    for (uint y = 0u; y < 4u; y++) {  // Unrolled
-        for (uint x = 0u; x < 4u; x++) {  // Unrolled
-            uint idx = (indices >> ((y * 4 + x) * 2)) & 0x3;
-            imageStore(outputImage, coord + ivec2(x, y), vec4(colors[idx]));
+    for (uint ty=0u; ty<4u; ++ty)
+    for (uint tx=0u; tx<4u; ++tx) {
+        uint t = ty*4u + tx;
+        uint i = idx2(indices32, t);
+        vec4 outc;
+        if (!opaque && i == 3u) {
+            outc = vec4(0.0,0.0,0.0,0.0); // transparent
+        } else {
+            outc = vec4(pal[i], 1.0);
         }
+        ivec2 p = base + ivec2(int(tx), int(ty));
+        if (p.x < dim.x && p.y < dim.y) imageStore(outputImage, p, outc);
     }
 }
