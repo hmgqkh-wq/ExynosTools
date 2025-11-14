@@ -1,9 +1,8 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x = WG_SIZE) in;
+layout(local_size_x = 64) in;
 
-// BC7 optimized path: covers common modes (RGB/RGBA), p-bits bias, partitions,
-// branch-light. For rare modes, indices still decode reasonably.
+// BC7: optimized common-mode decode (RGB/RGBA), partitions and p-bits bias
 
 float expand_unorm(uint v, uint bits) { return unormN(v, bits); }
 
@@ -16,12 +15,10 @@ struct ModeMeta {
 };
 
 ModeMeta parse_mode(uint b0) {
-    // Mode is the lowest set bit in first byte
     uint mode = 0u;
     for (uint i = 0u; i < 8u; ++i) { if (((b0 >> i) & 1u) != 0u) { mode = i; break; } }
 
     ModeMeta m;
-    // Representative mappings (cover common usage)
     if (mode == 0u) { m.indexBits = 3u; m.chanBits = 7u; m.pBits = true;  m.partitions = 1u; m.hasAlpha = false; }
     else if (mode == 1u) { m.indexBits = 3u; m.chanBits = 6u; m.pBits = true;  m.partitions = 2u; m.hasAlpha = false; }
     else if (mode == 6u) { m.indexBits = 4u; m.chanBits = 8u; m.pBits = false; m.partitions = 1u; m.hasAlpha = true; }
@@ -82,19 +79,21 @@ void main() {
     float A0 = E0.a;
     float A1 = E1.a;
 
-    uint64_t idxStream = uint64_t(w2) | (uint64_t(w3) << 32);
+    uint idx_lo = w2;
+    uint idx_hi = w3;
     uint maxIdx = (1u << m.indexBits) - 1u;
 
     for (uint t = 0u; t < 16u; ++t) {
-        uint idx = uint((idxStream >> (t * m.indexBits)) & maxIdx);
+        uint pos = t * m.indexBits;
+        uint idx = read4_64(idx_lo, idx_hi, pos) & maxIdx;
         float w = float(idx) / float(maxIdx);
 
-        uint px = t & 3u, py = t >> 2;
         uint part = (m.partitions == 1u) ? 0u : partitionForTexel(t);
 
         vec3 rgb = (part == 0u) ? mix(C0, C1, w) : mix(C1, C0, w);
         float a  = m.hasAlpha ? mix(A0, A1, w) : 1.0;
 
+        uint px = t & 3u, py = t >> 2;
         store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
     }
 }
