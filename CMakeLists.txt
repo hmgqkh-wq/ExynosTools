@@ -8,6 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(XCLIPSE_ENABLE_ANDROID_LOG "Enable Android logging" OFF)
 option(BUILD_WITH_THREAD_SANITIZER "Build with thread sanitizer (for debugging only)" OFF)
 option(SHADERS_REQUIRED "Fail configure if shader compiler or sources are missing" OFF)
+option(ENABLE_LTO "Enable link-time optimization" ON)
 
 # Prefer glslc if available
 find_program(GLSLC_EXECUTABLE glslc)
@@ -61,7 +62,6 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWE
       endif()
       add_custom_command(
         OUTPUT ${HEADER_OUTPUT}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADERS_DIR}
         COMMAND ${CMAKE_COMMAND}
                 -DSPIRV_FILE=__MISSING__
                 -DHEADER_FILE=${HEADER_OUTPUT}
@@ -78,7 +78,6 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWE
     endif()
     add_custom_command(
       OUTPUT ${HEADER_OUTPUT}
-      COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADERS_DIR}
       COMMAND ${CMAKE_COMMAND}
               -DSPIRV_FILE=__MISSING__
               -DHEADER_FILE=${HEADER_OUTPUT}
@@ -91,17 +90,10 @@ function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME_LOWE
   endif()
 endfunction()
 
-# Shaders referenced by sources — keep these in sync with includes in bc_emulate.c
-set(BC_SHADERS
-  bc1
-  bc3
-  bc4
-  bc5
-  bc6h
-  bc7
-)
+# Shaders referenced by sources — keep these in sync with bc_emulate.c includes
+set(BC_SHADERS bc1 bc3 bc4 bc5 bc6h bc7)
 
-# Request generation and collect header outputs
+# Request generation and collect headers
 set(GENERATED_HEADERS "")
 foreach(s IN LISTS BC_SHADERS)
   set(SRC "${CMAKE_SOURCE_DIR}/assets/shaders/src/${s}.comp")
@@ -111,9 +103,7 @@ foreach(s IN LISTS BC_SHADERS)
   list(APPEND GENERATED_HEADERS "${HDR}")
 endforeach()
 
-# Build generated headers before everything else
 add_custom_target(generated_shaders ALL DEPENDS ${GENERATED_HEADERS})
-set_target_properties(generated_shaders PROPERTIES EXCLUDE_FROM_ALL FALSE)
 
 # Expose generated include dirs
 include_directories(${GENERATED_DIR} ${SHADER_HEADERS_DIR})
@@ -130,7 +120,6 @@ set(SRC_FILES
   src/hud.c
 )
 
-# Create library target
 add_library(xeno_wrapper SHARED
   ${SRC_FILES}
   ${GENERATED_HEADERS}
@@ -139,16 +128,15 @@ add_library(xeno_wrapper SHARED
 add_dependencies(xeno_wrapper generated_shaders)
 
 target_include_directories(xeno_wrapper PRIVATE ${GENERATED_DIR} ${SHADER_HEADERS_DIR} ${CMAKE_SOURCE_DIR}/src)
-
-target_compile_definitions(xeno_wrapper PRIVATE $<$<BOOL:${XCLIPSE_ENABLE_ANDROID_LOG}>:XCLIPSE_ANDROID_LOG>)
-if(BUILD_WITH_THREAD_SANITIZER)
-  target_compile_options(xeno_wrapper PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
-  target_link_options(xeno_wrapper PRIVATE -fsanitize=thread)
-endif()
-
 find_package(Threads REQUIRED)
-if(UNIX)
-  target_link_libraries(xeno_wrapper PRIVATE dl Threads::Threads vulkan)
+target_link_libraries(xeno_wrapper PRIVATE dl Threads::Threads vulkan)
+
+if(ENABLE_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT ipo_supported OUTPUT ipo_msg)
+  if(ipo_supported)
+    set_target_properties(xeno_wrapper PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+  endif()
 endif()
 
 set_target_properties(xeno_wrapper PROPERTIES
@@ -165,5 +153,4 @@ install(TARGETS xeno_wrapper
 install(FILES usr/share/meta.json DESTINATION usr/share)
 install(FILES etc/exynostools/performance_mode.conf DESTINATION etc/exynostools)
 
-# Removed: install(DIRECTORY vendor DESTINATION .)
-# If you later add a vendor directory, re-enable this line.
+# vendor install removed (re-add when directory exists)
