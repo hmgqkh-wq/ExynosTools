@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
+# Usage: emit_spv_header.py <input.spv> <output.h> <symbol_prefix>
 import sys, os, struct
 
 if len(sys.argv) < 3:
@@ -19,6 +20,7 @@ pad = (4 - (len(data) % 4)) % 4
 if pad: data += b'\x00' * pad
 words = struct.unpack("<" + "I" * (len(data) // 4), data)
 guard = os.path.basename(out_h).upper().replace('.', '_').replace('-', '_') + "_"
+
 with open(out_h, "w", newline="\n") as fh:
     fh.write("// SPDX-License-Identifier: MIT\n")
     fh.write("/* Generated from %s. Do not edit. */\n\n" % os.path.basename(in_spv))
