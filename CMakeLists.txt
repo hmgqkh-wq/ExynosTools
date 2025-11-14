@@ -2,27 +2,24 @@ cmake_minimum_required(VERSION 3.16)
 
 project(ExynosTools C)
 
-# Allow overriding from environment/CI
-if(NOT DEFINED EXYNOSTOOLS_STAGING_POOL_SIZE)
-  set(EXYNOSTOOLS_STAGING_POOL_SIZE 1048576)
-endif()
-
-if(NOT DEFINED XCLIPSE_940_OPTIMIZE)
-  set(XCLIPSE_940_OPTIMIZE 1)
-endif()
-
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-# C standard
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Common compiler flags
+set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
+set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
+set(GENERATED_SPV_DIR "${CMAKE_BINARY_DIR}/generated_spv")
+
+include_directories(
+  "${INCLUDE_DIR}"
+  "${SRC_DIR}"
+  "${GENERATED_SPV_DIR}"
+)
+
 add_compile_options(
   -Wall
   -Wextra
@@ -30,19 +27,6 @@ add_compile_options(
   $<$<CONFIG:Release>:-O3>
 )
 
-# Project dirs
-set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
-set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
-set(GENERATED_SPV_DIR "${CMAKE_BINARY_DIR}/generated_spv") # important: includes generated shader headers
-
-# Ensure include directories: project's include, src, and generated SPV output
-include_directories(
-  "${INCLUDE_DIR}"
-  "${SRC_DIR}"
-  "${GENERATED_SPV_DIR}"
-)
-
-# Sources list - update if your repo layout differs
 set(PROJECT_SOURCES
   ${SRC_DIR}/main.c
   ${SRC_DIR}/logging.c
@@ -55,7 +39,6 @@ set(PROJECT_SOURCES
   ${SRC_DIR}/detect.c
 )
 
-# Only add files that exist to avoid configure-time errors on partial checkouts
 set(EXISTING_SOURCES "")
 foreach(f ${PROJECT_SOURCES})
   if(EXISTS ${f})
@@ -67,13 +50,11 @@ endforeach()
 
 add_executable(ExynosTools ${EXISTING_SOURCES})
 
-# Export compile definitions
 target_compile_definitions(ExynosTools PRIVATE
-  EXYNOSTOOLS_STAGING_POOL_SIZE=${EXYNOSTOOLS_STAGING_POOL_SIZE}
-  XCLIPSE_940_OPTIMIZE=${XCLIPSE_940_OPTIMIZE}
+  EXYNOSTOOLS_STAGING_POOL_SIZE=1048576
+  XCLIPSE_940_OPTIMIZE=1
 )
 
-# Link Vulkan if available
 find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND)
   pkg_check_modules(VULKAN_PKG QUIET vulkan)
@@ -93,13 +74,10 @@ else()
   endif()
 endif()
 
-# Threads
 find_package(Threads)
 if(THREADS_FOUND)
   target_link_libraries(ExynosTools PRIVATE Threads::Threads)
 endif()
 
-# Helpful messages
-message(STATUS "Configured ExynosTools")
 message(STATUS "Include dirs: ${INCLUDE_DIR}, ${SRC_DIR}, ${GENERATED_SPV_DIR}")
 message(STATUS "Sources: ${EXISTING_SOURCES}")
