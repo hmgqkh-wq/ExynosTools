@@ -7,11 +7,11 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(XCLIPSE_ENABLE_ANDROID_LOG "Enable Android logging" OFF)
 option(ENABLE_RAY_TRACING "Enable ray tracing support for Xclipse 940" ON)
+option(ENABLE_VRS "Enable variable rate shading for FPS boost" ON)
 
 # Find required tools and libraries
 find_program(GLSLC_EXECUTABLE glslc REQUIRED)
 find_package(Vulkan REQUIRED)
-find_library(SQUISH_LIB squish)  # Optional CPU fallback
 
 # Shader compilation function
 function(compile_shader_to_header SHADER_SOURCE HEADER_OUTPUT VARIABLE_NAME)
@@ -40,21 +40,16 @@ file(WRITE \${HEADER_FILE} \"static const unsigned char \${VAR_NAME}[] = { \${SP
 file(APPEND \${HEADER_FILE} \"static const unsigned int \${VAR_NAME}_len = sizeof(\${VAR_NAME});\\n\")
 ")
 
-# Compile shaders to headers
+# Compile shaders to headers for all BC formats
 set(SHADER_HEADERS_DIR "${CMAKE_BINARY_DIR}/generated/shaders")
 file(MAKE_DIRECTORY ${SHADER_HEADERS_DIR})
 
-compile_shader_to_header(
-    "${CMAKE_SOURCE_DIR}/assets/shaders/src/bc4.comp"
-    "${SHADER_HEADERS_DIR}/bc4_shader.h"
-    "bc4_shader_spv"
-)
-
-compile_shader_to_header(
-    "${CMAKE_SOURCE_DIR}/assets/shaders/src/bc5.comp"
-    "${SHADER_HEADERS_DIR}/bc5_shader.h"
-    "bc5_shader_spv"
-)
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc1.comp" "${SHADER_HEADERS_DIR}/bc1_shader.h" "bc1_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc3.comp" "${SHADER_HEADERS_DIR}/bc3_shader.h" "bc3_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc4.comp" "${SHADER_HEADERS_DIR}/bc4_shader.h" "bc4_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc5.comp" "${SHADER_HEADERS_DIR}/bc5_shader.h" "bc5_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc6h.comp" "${SHADER_HEADERS_DIR}/bc6h_shader.h" "bc6h_shader_spv")
+compile_shader_to_header("${CMAKE_SOURCE_DIR}/assets/shaders/src/bc7.comp" "${SHADER_HEADERS_DIR}/bc7_shader.h" "bc7_shader_spv")
 
 add_library(xeno_wrapper SHARED
     src/xeno_wrapper.c
@@ -65,18 +60,26 @@ add_library(xeno_wrapper SHARED
     src/logging.c
     src/app_profile.c
     src/hud.c
+    ${SHADER_HEADERS_DIR}/bc1_shader.h
+    ${SHADER_HEADERS_DIR}/bc3_shader.h
     ${SHADER_HEADERS_DIR}/bc4_shader.h
     ${SHADER_HEADERS_DIR}/bc5_shader.h
+    ${SHADER_HEADERS_DIR}/bc6h_shader.h
+    ${SHADER_HEADERS_DIR}/bc7_shader.h
 )
 
-target_compile_definitions(xeno_wrapper PRIVATE $<$<BOOL:${XCLIPSE_ENABLE_ANDROID_LOG}>:XCLIPSE_ANDROID_LOG>)
+target_compile_definitions(xeno_wrapper PRIVATE
+    $<$<BOOL:${XCLIPSE_ENABLE_ANDROID_LOG}>:XCLIPSE_ANDROID_LOG>
+    $<$<BOOL:${ENABLE_RAY_TRACING}>:VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME>
+    $<$<BOOL:${ENABLE_VRS}>:VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME>
+)
 
-find_package(Threads REQUIRED)
-if(UNIX)
-    target_link_libraries(xeno_wrapper PRIVATE dl Threads::Threads vulkan)
-endif()
+target_link_libraries(xeno_wrapper PRIVATE
+    dl
+    Threads::Threads
+    Vulkan::Vulkan
+)
 
-# Add include directory for generated shader headers
 target_include_directories(xeno_wrapper PRIVATE ${SHADER_HEADERS_DIR})
 
 set_target_properties(xeno_wrapper PROPERTIES
