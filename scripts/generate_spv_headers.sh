@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Generate SPIR-V for all shaders and emit headers into include/
+# Fixes: use glslangValidator -I<dir> (no space) and Vulkan (-V).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SH_DIR="$ROOT/assets/shaders/src"
@@ -21,8 +22,8 @@ for src in "$SH_DIR"/*.{comp,glsl}; do
   hdr="$OUT_DIR/${name}_shader.h"
 
   echo "Compiling ${base} -> ${spv}"
-  # Use Vulkan (-V) and provide include directory (-I) for #include "bc_common.glsl"
-  glslangValidator -V -I "$SH_DIR" -o "$spv" "$src"
+  # Important: -I<dir> (no space). Vulkan mode (-V).
+  glslangValidator -V "-I${SH_DIR}" -o "$spv" "$src"
 
   echo "Emitting header ${hdr}"
   python3 "$PY" "$spv" "$hdr" "${name}_spv"
