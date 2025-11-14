@@ -24,7 +24,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y \
+        sudo apt-get install -y --no-install-recommends \
           build-essential \
           cmake \
           ninja-build \
@@ -33,7 +33,7 @@ jobs:
           python3 \
           python3-venv \
           libvulkan-dev \
-          vulkan-utils
+          vulkan-tools || (sleep 3 && sudo apt-get update -y && sudo apt-get install -y --no-install-recommends libvulkan-dev vulkan-tools)
 
     - name: Ensure scripts are runnable (no-op if already executable)
       run: |
