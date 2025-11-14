@@ -1,9 +1,8 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x = WG_SIZE) in;
+layout(local_size_x = 64) in;
 
-// BC6H fast, spec-respecting path: handles signed/unsigned, endpoints, indices,
-// and simple partitions without heavy divergence. Tone-maps HDR to LDR.
+// BC6H: simplified, GPU-friendly path (signed/unsigned endpoints, indices, basic partition)
 
 float expand(uint v, uint bits, bool isSigned) {
     return isSigned ? snormN(v, bits) : unormN(v, bits);
@@ -13,7 +12,6 @@ vec3 tone_map(vec3 hdr) {
     return hdr / (hdr + vec3(1.0));
 }
 
-// Simple partition pattern for two partitions (avoids large tables)
 uint partitionForTexel(uint t) {
     uint x = t & 3u;
     return (x < 2u) ? 0u : 1u;
@@ -23,18 +21,16 @@ void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    // 128-bit block (4x32)
     uint w0 = bc_words[bi * 4u + 0u];
     uint w1 = bc_words[bi * 4u + 1u];
     uint w2 = bc_words[bi * 4u + 2u];
     uint w3 = bc_words[bi * 4u + 3u];
 
-    // Heuristic parse (covers common BC6H modes)
     bool isSigned   = ((w0 & 0x20u) != 0u);
     uint partitions = ((w0 & 0x10u) != 0u) ? 2u : 1u;
-    uint idxBits    = 5u; // typical
+    uint idxBits    = 5u;
 
-    // Endpoints (packed, approximate mapping to keep branch-light)
+    // Endpoint extraction (approximate mapping)
     uint R0 = (w0 >>  5) & 1023u;
     uint G0 = (w0 >> 15) & 1023u;
     uint B0 = ((w0 >> 25) & 511u) | ((w1 & 7u) << 7);
@@ -50,20 +46,21 @@ void main() {
                    expand(G1, 10, isSigned),
                    expand(B1, 11, isSigned));
 
-    // Indices stream
-    uint64_t idx64 = uint64_t(w2) | (uint64_t(w3) << 32);
+    // Indices stream in two uints
+    uint idx_lo = w2;
+    uint idx_hi = w3;
     uint maxIdx = (1u << idxBits) - 1u;
 
     for (uint t = 0u; t < 16u; ++t) {
-        uint idx = uint((idx64 >> (t * idxBits)) & maxIdx);
+        uint pos = t * idxBits;
+        uint idx = read4_64(idx_lo, idx_hi, pos) & maxIdx;
         float w = float(idx) / float(maxIdx);
 
-        uint px = t & 3u, py = t >> 2;
         uint part = (partitions == 1u) ? 0u : partitionForTexel(t);
-
         vec3 C = (part == 0u) ? mix(E0, E1, w) : mix(E1, E0, w);
-        vec3 LDR = tone_map(C);
 
+        vec3 LDR = tone_map(C);
+        uint px = t & 3u, py = t >> 2;
         store_px(ivec2(origin) + ivec2(px, py), vec4(LDR, 1.0));
     }
 }
