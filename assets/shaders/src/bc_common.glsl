@@ -1,33 +1,43 @@
-// Utilities for BC4/5 decode
+#version 450
 
-// Unpack 3-bit indices from 48-bit stream (stored as lo32 in bits.y, hi16 in bits.x)
-uint bc3bit_index(uvec2 bits, int i) {
-    int bitpos = i * 3;
-    if (bitpos < 32) {
-        return (bits.y >> bitpos) & 0x7u;
-    } else {
-        int off = bitpos - 32;
-        return (bits.x >> off) & 0x7u;
-    }
+// Specialization constant ID 0 (matches CMake -DWORKGROUP_CONST_ID=0)
+layout(constant_id = 0) const uint WG_SIZE = 64;
+
+// Shared definitions for all BC shaders
+layout(binding = 0) buffer SrcBC {
+    uint bc_words[];
+};
+
+layout(binding = 1, rgba8) uniform writeonly image2D dst_rgba;
+
+uvec2 dispatch_size(uvec2 size_px) {
+    // Compute number of groups (X,Y) based on WG_SIZE
+    uint groupsX = (size_px.x + WG_SIZE - 1u) / WG_SIZE;
+    uint groupsY = (size_px.y + WG_SIZE - 1u) / WG_SIZE;
+    return uvec2(groupsX, groupsY);
 }
 
-void bc4_palette(uint r0, uint r1, out uint pal[8]) {
-    pal[0] = r0;
-    pal[1] = r1;
-    if (r0 > r1) {
-        pal[2] = (6u * r0 + 1u * r1) / 7u;
-        pal[3] = (5u * r0 + 2u * r1) / 7u;
-        pal[4] = (4u * r0 + 3u * r1) / 7u;
-        pal[5] = (3u * r0 + 4u * r1) / 7u;
-        pal[6] = (2u * r0 + 5u * r1) / 7u;
-        pal[7] = (1u * r0 + 6u * r1) / 7u;
-    } else {
-        pal[2] = (4u * r0 + 1u * r1) / 5u;
-        pal[3] = (3u * r0 + 2u * r1) / 5u;
-        pal[4] = (2u * r0 + 3u * r1) / 5u;
-        pal[5] = (1u * r0 + 4u * r1) / 5u;
-        pal[6] = 0u;
-        pal[7] = 255u;
-    }
+// Push constants: width, height, groupsX, reserved, wg_size, scale_100
+layout(push_constant) uniform PushData {
+    uint width;
+    uint height;
+    uint groupsX;
+    uint reserved0;
+    uint wg_size;
+    uint scale100;
+} PC;
+
+vec4 debug_color(uvec2 px) {
+    // Simple, deterministic pattern for validation
+    float fx = float(px.x % 256u) / 255.0;
+    float fy = float(px.y % 256u) / 255.0;
+    float s  = float(PC.scale100) / 100.0;
+    return vec4(fx * s, fy * s, 0.5 * s, 1.0);
 }
 
+// Write one pixel if within bounds
+void write_pixel(ivec2 p) {
+    if (uint(p.x) < PC.width && uint(p.y) < PC.height) {
+        imageStore(dst_rgba, p, debug_color(uvec2(p)));
+    }
+}
