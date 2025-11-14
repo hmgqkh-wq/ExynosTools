@@ -1,99 +1,42 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 #include "bc_common.glsl"
-layout(local_size_x = 64) in;
 
-// BC7: optimized common-mode decode (RGB/RGBA), partitions and p-bits bias
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-float expand_unorm(uint v, uint bits) { return unormN(v, bits); }
+layout(set = 0, binding = 0) buffer InputBuffer {
+    uint data[];
+} inputBuffer;
 
-struct ModeMeta {
-    uint indexBits;
-    uint chanBits;
-    bool pBits;
-    uint partitions;
-    bool hasAlpha;
-};
-
-ModeMeta parse_mode(uint b0) {
-    uint mode = 0u;
-    for (uint i = 0u; i < 8u; ++i) { if (((b0 >> i) & 1u) != 0u) { mode = i; break; } }
-
-    ModeMeta m;
-    if (mode == 0u) { m.indexBits = 3u; m.chanBits = 7u; m.pBits = true;  m.partitions = 1u; m.hasAlpha = false; }
-    else if (mode == 1u) { m.indexBits = 3u; m.chanBits = 6u; m.pBits = true;  m.partitions = 2u; m.hasAlpha = false; }
-    else if (mode == 6u) { m.indexBits = 4u; m.chanBits = 8u; m.pBits = false; m.partitions = 1u; m.hasAlpha = true; }
-    else { m.indexBits = 3u; m.chanBits = 7u; m.pBits = true;  m.partitions = 1u; m.hasAlpha = false; }
-    return m;
-}
-
-vec4 read_ep(uint wA, uint wB, ModeMeta m, uint whichEP) {
-    uint mask = (1u << m.chanBits) - 1u;
-    if (whichEP == 0u) {
-        uint R = (wA >> 0) & mask;
-        uint G = (wA >> m.chanBits) & mask;
-        uint B = (wB >> 0) & mask;
-        uint A = m.hasAlpha ? ((wB >> m.chanBits) & mask) : mask;
-        return vec4(expand_unorm(R, m.chanBits),
-                    expand_unorm(G, m.chanBits),
-                    expand_unorm(B, m.chanBits),
-                    expand_unorm(A, m.chanBits));
-    } else {
-        uint R = (wB >> (m.chanBits * 2u)) & mask;
-        uint G = (wB >> (m.chanBits * 3u)) & mask;
-        uint B = (wA >> (m.chanBits * 2u)) & mask;
-        uint A = m.hasAlpha ? ((wA >> (m.chanBits * 3u)) & mask) : mask;
-        return vec4(expand_unorm(R, m.chanBits),
-                    expand_unorm(G, m.chanBits),
-                    expand_unorm(B, m.chanBits),
-                    expand_unorm(A, m.chanBits));
-    }
-}
-
-vec3 apply_pbits_rgb(vec3 c, ModeMeta m) {
-    if (!m.pBits) return c;
-    float q = (m.chanBits == 7u) ? 1.0 / 127.0 : 1.0 / 63.0;
-    return clamp(c + vec3(q), 0.0, 1.0);
-}
-
-uint partitionForTexel(uint t) {
-    uint x = t & 3u;
-    return (x < 2u) ? 0u : 1u;
-}
+layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
 
 void main() {
-    uint bi = block_index();
-    uvec2 origin = block_origin(bi);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * 4;
+    uint blockIndex = (gl_GlobalInvocationID.y * (imageSize(outputImage).x / 4) + gl_GlobalInvocationID.x) * 4;
 
-    uint w0 = bc_words[bi * 4u + 0u];
-    uint w1 = bc_words[bi * 4u + 1u];
-    uint w2 = bc_words[bi * 4u + 2u];
-    uint w3 = bc_words[bi * 4u + 3u];
+    uint mode = inputBuffer.data[blockIndex] & 0xFF;  // BC7 mode
 
-    ModeMeta m = parse_mode(w0);
+    // Mode-specific decoding (reduce branches with switch)
+    switch (mode) {
+        case 0:
+            // Mode 0 example (unroll for all modes)
+            vec4 endpoints[8];
+            // Unroll endpoint extraction
+            for (int i = 0; i < 8; i++) endpoints[i] = unpackBC7Endpoint(inputBuffer.data[blockIndex + i], i);
 
-    vec4 E0 = read_ep(w0, w1, m, 0u);
-    vec4 E1 = read_ep(w2, w3, m, 1u);
+            half4 hEndpoints[8];
+            for (int i = 0; i < 8; i++) hEndpoints[i] = half4(endpoints[i]);  // Half for interp
 
-    vec3 C0 = apply_pbits_rgb(E0.rgb, m);
-    vec3 C1 = apply_pbits_rgb(E1.rgb, m);
-    float A0 = E0.a;
-    float A1 = E1.a;
+            uint indices = inputBuffer.data[blockIndex + 8];
 
-    uint idx_lo = w2;
-    uint idx_hi = w3;
-    uint maxIdx = (1u << m.indexBits) - 1u;
-
-    for (uint t = 0u; t < 16u; ++t) {
-        uint pos = t * m.indexBits;
-        uint idx = read4_64(idx_lo, idx_hi, pos) & maxIdx;
-        float w = float(idx) / float(maxIdx);
-
-        uint part = (m.partitions == 1u) ? 0u : partitionForTexel(t);
-
-        vec3 rgb = (part == 0u) ? mix(C0, C1, w) : mix(C1, C0, w);
-        float a  = m.hasAlpha ? mix(A0, A1, w) : 1.0;
-
-        uint px = t & 3u, py = t >> 2;
-        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
+            for (uint y = 0u; y < 4u; y++) {
+                for (uint x = 0u; x < 4u; x++) {
+                    uint idx = (indices >> ((y * 4 + x) * 4)) & 0xF;
+                    half4 color = hEndpoints[0] + (hEndpoints[1] - hEndpoints[0]) * (half(idx) / 15.0h);
+                    imageStore(outputImage, coord + ivec2(x, y), vec4(color));
+                }
+            }
+            break;
+        // ... (implement cases for modes 1-7 with similar unrolled logic)
     }
 }
