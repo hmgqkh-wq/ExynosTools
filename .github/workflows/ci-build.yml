@@ -1,4 +1,4 @@
-name: CI Build — Vulkan shaders and native build (Android 16 / Xclipse 940)
+name: CI Build — Vulkan shaders and native build (serial shader generation)
 
 on:
   push:
@@ -21,25 +21,55 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Install tools
+    - name: Install system dependencies
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y build-essential cmake ninja-build glslang-tools spirv-tools python3
+        sudo apt-get install -y build-essential cmake ninja-build glslang-tools spirv-tools python3 python3-venv
 
-    - name: Generate SPIR-V headers
+    - name: Ensure scripts are runnable (no-op if already executable)
       run: |
-        set -euo pipefail
+        chmod +x scripts/generate_spv_headers.sh || true
+        chmod +x cmake/emit_spv_header.py || true
+
+    - name: Generate SPIR-V headers (serial, bash)
+      run: |
+        echo "Running shader generator via bash (serial)"
         bash scripts/generate_spv_headers.sh
 
-    - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -G Ninja
+    - name: Show generated headers
+      run: |
+        echo "::group::include/"
+        ls -la include || true
+        head -n 40 include/bc4_shader.h || true
+        echo "::endgroup::"
+
+    - name: Configure (Ninja)
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -G Ninja
 
     - name: Build
-      run: cmake --build build -- -j$(nproc)
+      run: |
+        cmake --build build -- -j$(nproc)
 
-    - name: Artifacts
+    - name: Run tests (optional)
+      if: always()
+      run: |
+        if [ -f build/run-tests.sh ]; then
+          bash build/run-tests.sh || true
+        else
+          echo "No tests to run"
+        fi
+
+    - name: Archive build artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: exynostools-build
         path: build/
+
+    - name: Upload generated headers separately
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: generated-shader-headers
+        path: include/
