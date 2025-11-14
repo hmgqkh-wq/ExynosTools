@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 # cmake/enable_xeno_globals.cmake
-# Usage: include this file from your top-level CMakeLists or target file.
-# It marks src/xeno_wrapper.c as the single provider of the Vulkan globals.
+# Mark only src/xeno_wrapper.c as the single provider of Vulkan globals.
+# Drop this file into cmake/ and include it from your top-level CMakeLists.txt.
 
-# Adjust the relative path if your sources live elsewhere.
-if (EXISTS "${CMAKE_SOURCE_DIR}/src/xeno_wrapper.c")
-    set_source_files_properties("${CMAKE_SOURCE_DIR}/src/xeno_wrapper.c"
+set(XENO_WRAPPER_SRC "${CMAKE_SOURCE_DIR}/src/xeno_wrapper.c")
+
+if(EXISTS "${XENO_WRAPPER_SRC}")
+    message(STATUS "Enabling PROVIDE_VK_GLOBALS for ${XENO_WRAPPER_SRC}")
+    set_source_files_properties("${XENO_WRAPPER_SRC}"
         PROPERTIES COMPILE_DEFINITIONS "PROVIDE_VK_GLOBALS")
 else()
-    message(WARNING "xeno_wrapper.c not found at ${CMAKE_SOURCE_DIR}/src/xeno_wrapper.c; PROVIDE_VK_GLOBALS not set")
+    message(WARNING "xeno_wrapper.c not found at ${XENO_WRAPPER_SRC}; PROVIDE_VK_GLOBALS not set")
 endif()
