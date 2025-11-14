@@ -1,6 +1,8 @@
 #version 450
 #include "bc_common.glsl"
-layout(local_size_x_id = 0) in;
+layout(local_size_x = WG_SIZE) in;
+
+// BC4: single-channel (R) endpoints 8-bit, 3-bit indices
 
 float chan_interp(uint c0, uint c1, uint idx, bool isSigned) {
     float C0 = isSigned ? snormN(c0, 8) : float(c0) / 255.0;
@@ -22,18 +24,18 @@ void main() {
     uint bi = block_index();
     uvec2 origin = block_origin(bi);
 
-    uint c0c1 = bc_words[bi * 2u + 0u];
-    uint i0   = bc_words[bi * 2u + 1u];
+    uint r0r1 = bc_words[bi * 2u + 0u];
+    uint ri0  = bc_words[bi * 2u + 1u];
 
-    uint c0 = c0c1 & 0xffu;
-    uint c1 = (c0c1 >> 8) & 0xffu;
-    uint64_t idx64 = uint64_t(i0);
+    uint r0 = r0r1 & 0xFFu;
+    uint r1 = (r0r1 >> 8) & 0xFFu;
 
+    uint64_t rIdx = uint64_t(ri0);
     bool isSigned = (PC.scale100 == 200u);
 
     for (uint t = 0u; t < 16u; ++t) {
-        uint idx = uint((idx64 >> (t * 3u)) & 7u);
-        float R = chan_interp(c0, c1, idx, isSigned);
+        uint ridx = uint((rIdx >> (t * 3u)) & 7u);
+        float R = chan_interp(r0, r1, ridx, isSigned);
         uint px = t & 3u, py = t >> 2;
         store_px(ivec2(origin) + ivec2(px, py), vec4(R, R, R, 1.0));
     }
