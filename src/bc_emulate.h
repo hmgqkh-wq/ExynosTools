@@ -8,7 +8,6 @@
 extern "C" {
 #endif
 
-// Supported BC formats (keep in sync with shader/order in bc_emulate.c)
 typedef enum XenoBCFormat {
     XENO_BC1 = 0,
     XENO_BC3 = 1,
@@ -19,7 +18,6 @@ typedef enum XenoBCFormat {
     XENO_BC_FORMAT_COUNT = 6
 } XenoBCFormat;
 
-// Subresource selection
 typedef struct XenoSubresourceRange {
     uint32_t baseMipLevel;
     uint32_t mipLevelCount;
@@ -27,7 +25,6 @@ typedef struct XenoSubresourceRange {
     uint32_t arrayLayerCount;
 } XenoSubresourceRange;
 
-// Driver context for BC emulation
 typedef struct XenoBCContext {
     VkDevice device;
     VkPhysicalDevice physicalDevice;
@@ -40,17 +37,21 @@ typedef struct XenoBCContext {
 
     uint32_t workgroup_size;
 
-    // Storage image view for dst_rgba (created on demand, reused, destroyed at teardown)
     VkImageView dstView;
+
+    VkDescriptorSetLayout bindlessLayout;
+    VkDescriptorPool      bindlessPool;
+    VkDescriptorSet       bindlessSet;
+
+    int hasDescriptorIndexing;
+    int hasRayTracing;
 
     int initialized;
 } XenoBCContext;
 
-// Lifecycle
 XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice phys);
 void           xeno_bc_destroy_context(XenoBCContext* ctx);
 
-// Decode entry
 VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
                               XenoBCContext* ctx,
                               VkBuffer src_bc,
