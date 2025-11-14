@@ -2,21 +2,19 @@
 #include "bc_common.glsl"
 layout(local_size_x_id = 0) in;
 
-// BC1 (DXT1) decode: 8 bytes per block (2 color endpoints + 16 2-bit indices)
+// BC1: RGB565 endpoints + 2-bit indices; 3-color mode introduces transparent index.
 vec3 rgb565_to_rgb(uint c) {
-    float r = u5_to_float(u5(c, 11));
-    float g = u6_to_float(u6(c, 5));
-    float b = u5_to_float(u5(c, 0));
+    float r = unormN(u5(c, 11), 5);
+    float g = unormN(u6(c, 5), 6);
+    float b = unormN(u5(c, 0), 5);
     return vec3(r, g, b);
 }
 
 void main() {
-    // Each invocation decodes one BC block (4x4 => write 16 pixels)
-    uint blockIndex = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * PC.groupsX;
-    uvec2 origin = block_origin(blockIndex);
-    // 8 bytes = 2 uint32 words low/high for convenience
-    uint w0 = bc_words[blockIndex * 2u + 0u];
-    uint w1 = bc_words[blockIndex * 2u + 1u];
+    uint bi = block_index();
+    uvec2 origin = block_origin(bi);
+    uint w0 = bc_words[bi * 2u + 0u];
+    uint w1 = bc_words[bi * 2u + 1u];
 
     uint c0 = w0 & 0xffffu;
     uint c1 = (w0 >> 16) & 0xffffu;
@@ -24,28 +22,23 @@ void main() {
     vec3 c1_rgb = rgb565_to_rgb(c1);
 
     bool fourColor = c0 > c1;
-    vec3 palette[4];
-    palette[0] = c0_rgb;
-    palette[1] = c1_rgb;
+    vec3 pal[4];
+    pal[0] = c0_rgb;
+    pal[1] = c1_rgb;
     if (fourColor) {
-        palette[2] = (2.0 * c0_rgb + c1_rgb) / 3.0;
-        palette[3] = (c0_rgb + 2.0 * c1_rgb) / 3.0;
+        pal[2] = (2.0 * c0_rgb + c1_rgb) / 3.0;
+        pal[3] = (c0_rgb + 2.0 * c1_rgb) / 3.0;
     } else {
-        palette[2] = (c0_rgb + c1_rgb) * 0.5;
-        palette[3] = vec3(0.0); // transparent
+        pal[2] = (c0_rgb + c1_rgb) * 0.5;
+        pal[3] = vec3(0.0); // transparent
     }
 
-    // 16 indices packed 2 bits each
-    uint idxBits0 = (w0 >> 32) & 0xffffffffu; // upper 32 if coming as 64; here use w1
-    uint idxBits  = w1;
-
-    for (uint py = 0u; py < 4u; ++py) {
-        for (uint px = 0u; px < 4u; ++px) {
-            uint bitPos = (py * 4u + px) * 2u;
-            uint idx = (idxBits >> bitPos) & 3u;
-            vec3 rgb = palette[idx];
-            float a = (fourColor || idx != 3u) ? 1.0 : 0.0;
-            store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
-        }
+    uint idxBits = w1;
+    for (uint t = 0u; t < 16u; ++t) {
+        uint idx = (idxBits >> (t * 2u)) & 3u;
+        vec3 rgb = pal[idx];
+        float a = (fourColor || idx != 3u) ? 1.0 : 0.0;
+        uint px = t & 3u, py = t >> 2;
+        store_px(ivec2(origin) + ivec2(px, py), vec4(rgb, a));
     }
 }
