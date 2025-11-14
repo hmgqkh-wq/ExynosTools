@@ -1,4 +1,3 @@
-// src/drivers/xclipse/async.c
 #include "xeno_log.h"
 #include "logging.h"
 #include <vulkan/vulkan.h>
