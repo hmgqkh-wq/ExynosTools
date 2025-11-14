@@ -1,10 +1,8 @@
 // src/bc_emulate.c
 // SPDX-License-Identifier: MIT
 // Xclipse 940 focused, production-grade BC decode pipeline for Android 16.
-// This file expects the generated SPIR-V header files to be present in include/:
-//   include/common_shader.h
-//   include/bc1_shader.h ... include/bc7_shader.h
-// Ensure your CMake target_include_directories contains "${CMAKE_SOURCE_DIR}/include".
+// This file is resilient to missing generated headers (bcN_shader.h).
+// No dependency on common_shader.h. Pure C11, no C++ constructs.
 
 #include <stdlib.h>
 #include <string.h>
@@ -17,15 +15,55 @@
 #include "xeno_bc.h"
 #include "logging.h"
 
-/* Generated SPIR-V headers (emitter writes full definitions into these files) */
-#include "common_shader.h"
-#include "bc1_shader.h"
-#include "bc2_shader.h"
-#include "bc3_shader.h"
-#include "bc4_shader.h"
-#include "bc5_shader.h"
-#include "bc6h_shader.h"
-#include "bc7_shader.h"
+/* Resilient inclusion of generated SPIR-V headers:
+   We detect presence per-format and only expose symbols when headers exist.
+   This prevents compile errors if a particular header is not generated. */
+#if defined(__has_include)
+  #if __has_include("bc1_shader.h")
+    #include "bc1_shader.h"
+    #define HAVE_BC1 1
+  #endif
+  #if __has_include("bc2_shader.h")
+    #include "bc2_shader.h"
+    #define HAVE_BC2 1
+  #endif
+  #if __has_include("bc3_shader.h")
+    #include "bc3_shader.h"
+    #define HAVE_BC3 1
+  #endif
+  #if __has_include("bc4_shader.h")
+    #include "bc4_shader.h"
+    #define HAVE_BC4 1
+  #endif
+  #if __has_include("bc5_shader.h")
+    #include "bc5_shader.h"
+    #define HAVE_BC5 1
+  #endif
+  #if __has_include("bc6h_shader.h")
+    #include "bc6h_shader.h"
+    #define HAVE_BC6H 1
+  #endif
+  #if __has_include("bc7_shader.h")
+    #include "bc7_shader.h"
+    #define HAVE_BC7 1
+  #endif
+#else
+  /* Conservative includes when __has_include is unavailable; comment out if any header is missing */
+  #include "bc1_shader.h"
+  #include "bc2_shader.h"
+  #include "bc3_shader.h"
+  #include "bc4_shader.h"
+  #include "bc5_shader.h"
+  #include "bc6h_shader.h"
+  #include "bc7_shader.h"
+  #define HAVE_BC1 1
+  #define HAVE_BC2 1
+  #define HAVE_BC3 1
+  #define HAVE_BC4 1
+  #define HAVE_BC5 1
+  #define HAVE_BC6H 1
+  #define HAVE_BC7 1
+#endif
 
 /* Tunables */
 #ifndef XCLIPSE_DEFAULT_LOCAL_X
@@ -34,18 +72,19 @@
 #ifndef XCLIPSE_DEFAULT_LOCAL_Y
 #define XCLIPSE_DEFAULT_LOCAL_Y 8u
 #endif
-
 #ifndef EXYNOSTOOLS_STAGING_POOL_SIZE
-#define EXYNOSTOOLS_STAGING_POOL_SIZE (1 << 20)
+#define EXYNOSTOOLS_STAGING_POOL_SIZE (1 << 20) /* 1 MiB default */
 #endif
 
+/* Descriptor bindings (shader layout assumption) */
 #define BINDING_SRC_BUFFER 0
 #define BINDING_DST_IMAGE  1
 
+/* Logging */
 #define LOG_E(...) logging_error(__VA_ARGS__)
 #define LOG_I(...) logging_info(__VA_ARGS__)
 
-/* Opaque context definition */
+/* Context */
 struct XenoBCContext {
     VkDevice device;
     VkPhysicalDevice physical;
@@ -84,7 +123,7 @@ struct XenoBCContext {
     uint32_t subgroup_size;
 };
 
-/* Forward declarations */
+/* Forward */
 static VkResult create_shader_module_from_bytes(VkDevice device, const unsigned char *data, size_t size, VkShaderModule *out);
 static uint32_t find_memory_type_index(VkPhysicalDevice physical, uint32_t typeBits, VkMemoryPropertyFlags props);
 static VkResult create_common_layouts_and_pipelines(struct XenoBCContext *ctx);
@@ -148,7 +187,7 @@ static VkResult create_compute_pipeline_with_spec(struct XenoBCContext *ctx, VkS
     return vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &cpci, NULL, out);
 }
 
-/* Create layouts and pipelines */
+/* Layouts and pipelines */
 static VkResult create_common_layouts_and_pipelines(struct XenoBCContext *ctx)
 {
     if (!ctx) return VK_ERROR_INITIALIZATION_FAILED;
@@ -180,7 +219,7 @@ static VkResult create_common_layouts_and_pipelines(struct XenoBCContext *ctx)
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &ctx->descriptorSetLayout;
 
-    VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 4 * sizeof(uint32_t) };
+    VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t) * 4 };
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges = &pcr;
 
@@ -254,20 +293,26 @@ static VkResult init_staging_pool(struct XenoBCContext *ctx, size_t pool_size)
 {
     if (!ctx || pool_size == 0) return VK_ERROR_INITIALIZATION_FAILED;
     ctx->stagingSize = pool_size;
+
     VkBufferCreateInfo bci = {0};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = pool_size;
     bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
     VkResult r = vkCreateBuffer(ctx->device, &bci, NULL, &ctx->stagingBuffer);
     if (r != VK_SUCCESS) return r;
+
     VkMemoryRequirements mr; vkGetBufferMemoryRequirements(ctx->device, ctx->stagingBuffer, &mr);
     if (ctx->physical == VK_NULL_HANDLE) { LOG_E("physical device not set"); vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return VK_ERROR_INITIALIZATION_FAILED; }
+
     uint32_t memIndex = find_memory_type_index(ctx->physical, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (memIndex == UINT32_MAX) { vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return VK_ERROR_MEMORY_MAP_FAILED; }
+
     VkMemoryAllocateInfo mai = {0}; mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; mai.allocationSize = mr.size; mai.memoryTypeIndex = memIndex;
     r = vkAllocateMemory(ctx->device, &mai, NULL, &ctx->stagingMemory); if (r != VK_SUCCESS) { vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return r; }
     r = vkBindBufferMemory(ctx->device, ctx->stagingBuffer, ctx->stagingMemory, 0); if (r != VK_SUCCESS) { vkFreeMemory(ctx->device, ctx->stagingMemory, NULL); vkDestroyBuffer(ctx->device, ctx->stagingBuffer, NULL); return r; }
+
     atomic_store(&ctx->staging_head, 0);
     return VK_SUCCESS;
 }
@@ -286,33 +331,57 @@ static VkResult stage_into_pool(struct XenoBCContext *ctx, const void *data, siz
     size_t alloc = (size + align - 1) & ~(align - 1);
     size_t head = (size_t)atomic_fetch_add(&ctx->staging_head, alloc);
     if (head + alloc > ctx->stagingSize) { atomic_store(&ctx->staging_head, 0); head = 0; }
-    void *mapped = NULL; VkResult r = vkMapMemory(ctx->device, ctx->stagingMemory, head, alloc, 0, &mapped); if (r != VK_SUCCESS) return r;
-    memcpy(mapped, data, size); vkUnmapMemory(ctx->device, ctx->stagingMemory);
-    *out_offset = (VkDeviceSize)head; return VK_SUCCESS;
+
+    void *mapped = NULL; VkResult r = vkMapMemory(ctx->device, ctx->stagingMemory, head, alloc, 0, &mapped);
+    if (r != VK_SUCCESS) return r;
+    memcpy(mapped, data, size);
+    vkUnmapMemory(ctx->device, ctx->stagingMemory);
+
+    *out_offset = (VkDeviceSize)head;
+    return VK_SUCCESS;
 }
 
-/* Public API: create/destroy context and decode */
+/* Public API */
 VkResult xeno_bc_create_context(VkDevice device, struct XenoBCContext **out_ctx)
 {
     if (!device || !out_ctx) return VK_ERROR_INITIALIZATION_FAILED;
     struct XenoBCContext *ctx = (struct XenoBCContext*)calloc(1, sizeof(*ctx));
     if (!ctx) return VK_ERROR_OUT_OF_HOST_MEMORY;
     ctx->device = device;
+
     if (ctx->physical != VK_NULL_HANDLE) vkGetPhysicalDeviceProperties(ctx->physical, &ctx->physProps);
+
     VkResult r;
+
+    /* Create modules only for available headers/symbols */
+    #ifdef HAVE_BC1
     if (bc1_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc1_shader_spv, bc1_shader_spv_len, &ctx->bc1Module); if (r != VK_SUCCESS) goto fail; }
+    #endif
+    #ifdef HAVE_BC2
     if (bc2_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc2_shader_spv, bc2_shader_spv_len, &ctx->bc2Module); if (r != VK_SUCCESS) goto fail; }
+    #endif
+    #ifdef HAVE_BC3
     if (bc3_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc3_shader_spv, bc3_shader_spv_len, &ctx->bc3Module); if (r != VK_SUCCESS) goto fail; }
+    #endif
+    #ifdef HAVE_BC4
     if (bc4_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc4_shader_spv, bc4_shader_spv_len, &ctx->bc4Module); if (r != VK_SUCCESS) goto fail; }
+    #endif
+    #ifdef HAVE_BC5
     if (bc5_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc5_shader_spv, bc5_shader_spv_len, &ctx->bc5Module); if (r != VK_SUCCESS) goto fail; }
+    #endif
+    #ifdef HAVE_BC6H
     if (bc6h_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc6h_shader_spv, bc6h_shader_spv_len, &ctx->bc6hModule); if (r != VK_SUCCESS) goto fail; }
+    #endif
+    #ifdef HAVE_BC7
     if (bc7_shader_spv_len > 0) { r = create_shader_module_from_bytes(device, bc7_shader_spv, bc7_shader_spv_len, &ctx->bc7Module); if (r != VK_SUCCESS) goto fail; }
+    #endif
 
     r = create_common_layouts_and_pipelines(ctx); if (r != VK_SUCCESS) { LOG_E("create_common_layouts_and_pipelines failed: %d", r); goto fail; }
     r = init_staging_pool(ctx, (size_t)EXYNOSTOOLS_STAGING_POOL_SIZE); if (r != VK_SUCCESS) { LOG_E("init_staging_pool failed: %d", r); goto fail; }
     r = ensure_descriptor_pool(ctx); if (r != VK_SUCCESS) { LOG_E("ensure_descriptor_pool failed: %d", r); goto fail; }
 
     *out_ctx = ctx; return VK_SUCCESS;
+
 fail:
     if (ctx) {
         destroy_common_layouts_and_pipelines(ctx);
@@ -347,7 +416,7 @@ void xeno_bc_destroy_context(struct XenoBCContext *ctx)
     free(ctx);
 }
 
-/* Main decode */
+/* Decode */
 VkResult xeno_bc_decode_image(VkCommandBuffer cmd,
                               struct XenoBCContext *ctx,
                               const void *host_data,
