@@ -208,4 +208,34 @@ if(UNIX)
   find_library(LIBDL dl)
   if(LIBDL)
     target_link_libraries(exynostools PRIVATE ${LIBDL})
-    target
+    target_link_libraries(xeno_wrapper PRIVATE ${LIBDL})
+  endif()
+endif()
+
+if(ENABLE_LTO AND NOT DEFINED ANDROID_NDK_HOME)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT ipo_supported OUTPUT ipo_out)
+  if(ipo_supported)
+    set_target_properties(exynostools PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_target_properties(xeno_wrapper PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+  endif()
+endif()
+
+install(TARGETS xeno_wrapper LIBRARY DESTINATION usr/lib)
+install(TARGETS exynostools RUNTIME DESTINATION usr/bin)
+
+if(EXISTS "${GENERATED_SHADER_DIR}")
+  install(DIRECTORY ${GENERATED_SHADER_DIR}/ DESTINATION usr/share/exynostools/shaders
+          FILES_MATCHING PATTERN "*.spv" PATTERN "*_spv.c" PATTERN "*_spv.h")
+endif()
+
+if(EXISTS "${SHADERS_SRC_DIR}")
+  install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/shaders/src/ DESTINATION usr/share/exynostools/shaders/src
+          FILES_MATCHING PATTERN "*.comp" PATTERN "*.glsl" PATTERN "*.frag" PATTERN "*.vert")
+endif()
+
+if(EXISTS "${INCLUDE_DIR}")
+  install(DIRECTORY ${INCLUDE_DIR}/ DESTINATION usr/include FILES_MATCHING PATTERN "*.h")
+endif()
+
+message(STATUS "Configured. BUILD_SHADERS=${BUILD_SHADERS} BUILD_SELFTEST=${BUILD_SELFTEST} SHADER_TARGET_ENV=${SHADER_TARGET_ENV}")
