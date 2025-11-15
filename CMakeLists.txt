@@ -1,94 +1,38 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.13)
 project(ExynosTools C)
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+# Basic toolchain/ABI detection (Android/Ninja/CMake)
+if (NOT DEFINED CMAKE_SYSTEM_NAME)
+    set(CMAKE_SYSTEM_NAME "Android" CACHE STRING "" FORCE)
 endif()
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-# Paths
-set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
-set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
-set(SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/assets/shaders/src")
-set(GENERATED_SPV_DIR "${CMAKE_BINARY_DIR}/generated_spv")
-set(GENERATED_HDR_DIR "${GENERATED_SPV_DIR}")
-
-# Ensure generated headers are visible to compiler
-include_directories(
-  "${INCLUDE_DIR}"
-  "${SRC_DIR}"
-  "${GENERATED_HDR_DIR}"
+# Example target properties — adjust your actual sources and targets as needed.
+file(GLOB_RECURSE EXYNOSTOOLS_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/**/*.c"
 )
 
-# Compiler options
-add_compile_options(-Wall -Wextra -Wno-unused-parameter $<$<CONFIG:Release>:-O3>)
+add_executable(exynostools ${EXYNOSTOOLS_SOURCES})
 
-# Shader list
-set(SHADERS bc1 bc2 bc3 bc4 bc5 bc6h bc7)
+# Standard compile options
+target_compile_features(exynostools PRIVATE c_std_99)
+target_compile_options(exynostools PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-# Rule: compile each .comp to .spv then to _shader.h using python3 script.
-find_program(GLSLANG_VALIDATOR glslangValidator)
-if(NOT GLSLANG_VALIDATOR)
-  message(STATUS "glslangValidator not found in PATH; CI sets it up. Local dev may need to install it.")
-endif()
-
-file(MAKE_DIRECTORY ${GENERATED_SPV_DIR})
-
-foreach(name ${SHADERS})
-  set(src "${SHADER_SRC_DIR}/${name}.comp")
-  set(spv "${GENERATED_SPV_DIR}/${name}.spv")
-  set(hdr "${GENERATED_HDR_DIR}/${name}_shader.h")
-  add_custom_command(
-    OUTPUT ${spv} ${hdr}
-    COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader ${name}"
-    COMMAND ${GLSLANG_VALIDATOR} -V -o ${spv} ${src}
-    COMMAND ${CMAKE_COMMAND} -E env python3 ${CMAKE_SOURCE_DIR}/scripts/spv_to_header.py ${spv} ${hdr} ${name}_shader
-    DEPENDS ${src} ${CMAKE_SOURCE_DIR}/scripts/spv_to_header.py
-    COMMENT "Generate SPIR-V and header for ${name}"
-    VERBATIM
-  )
-  list(APPEND GENERATED_SPV_FILES ${spv} ${hdr})
-endforeach()
-
-add_custom_target(gen_shaders ALL DEPENDS ${GENERATED_SPV_FILES})
-
-# Source files
-file(GLOB_RECURSE PROJECT_SOURCES "${SRC_DIR}/*.c")
-add_executable(exynostools ${PROJECT_SOURCES})
-
-add_dependencies(exynostools gen_shaders)
-
-target_compile_definitions(exynostools PRIVATE
-  EXYNOSTOOLS_STAGING_POOL_SIZE=1048576
-  XCLIPSE_940_OPTIMIZE=1
-)
-
-# Vulkan linking (best-effort)
-find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
-  pkg_check_modules(VULKAN_PKG QUIET vulkan)
-  if(VULKAN_PKG_FOUND)
-    target_include_directories(exynostools PRIVATE ${VULKAN_PKG_INCLUDE_DIRS})
-    target_link_libraries(exynostools PRIVATE ${VULKAN_PKG_LDFLAGS})
-  else()
-    find_library(VULKAN_LIB NAMES vulkan Vulkan)
-    if(VULKAN_LIB)
-      target_link_libraries(exynostools PRIVATE ${VULKAN_LIB})
-    endif()
-  endif()
+# Linker/arch-specific flags: only add cortex fix for AArch64 targets.
+if(CMAKE_C_COMPILER_TARGET MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    message(STATUS "Configuring AArch64-specific linker flags")
+    # Use correct form for clang/ld; do not add stray leading dot. Example only:
+    target_link_options(exynostools PRIVATE "--fix-cortex-a53-843419")
 else()
-  find_library(VULKAN_LIB NAMES vulkan Vulkan)
-  if(VULKAN_LIB)
-    target_link_libraries(exynostools PRIVATE ${VULKAN_LIB})
-  endif()
+    message(STATUS "Non-AArch64 target detected; skipping cortex fix linker flag")
 endif()
 
-find_package(Threads)
-if(THREADS_FOUND)
-  target_link_libraries(exynostools PRIVATE Threads::Threads)
+# Link with Vulkan if available
+find_package(Vulkan REQUIRED)
+if (Vulkan_FOUND)
+    target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(exynostools PRIVATE ${Vulkan_LIBRARIES})
 endif()
 
-message(STATUS "Configured ExynosTools project with shader generation")
+# Install rules (optional)
+install(TARGETS exynostools DESTINATION bin)
