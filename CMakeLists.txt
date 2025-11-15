@@ -70,7 +70,7 @@ endif()
 # ---------------------- Build shader list (compile only entrypoints) --------
 set(GENERATED_SHADER_C_FILES)
 if(EXISTS "${SHADERS_SRC_DIR}")
-  # First, ensure normalization/prep runs before generation
+  # Gather shader-like files
   file(GLOB_RECURSE _ALL_SRC_FILES
     "${SHADERS_SRC_DIR}/*.comp"
     "${SHADERS_SRC_DIR}/*.frag"
@@ -84,39 +84,42 @@ if(EXISTS "${SHADERS_SRC_DIR}")
     get_filename_component(_ext  ${_infile} EXT)
     string(TOLOWER "${_ext}" _ext_l)
 
-    # We will compile from the generated/sanitized directory when BUILD_SHADERS is on
-    set(_sanitized "${GENERATED_SHADER_DIR}/${base}${_ext}")
+    # sanitized copy path (we compile from GENERATED_SHADER_DIR)
+    set(_sanitized "${GENERATED_SHADER_DIR}/${_base}${_ext_l}")
     set(_out_spv "${GENERATED_SHADER_DIR}/${_base}.spv")
     set(_out_c  "${GENERATED_SHADER_DIR}/${_base}_spv.c")
 
-    if(BUILD_SHADERS)
-      # ensure sanitized copy exists: prep_shaders.sh will handle glsl->generated copies.
-      # If SKIP prep, we still copy original to generated to avoid editing originals.
-      add_custom_command(OUTPUT "${_sanitized}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_infile}" "${_sanitized}"
-        DEPENDS "${_infile}"
-        COMMENT "Copy source to generated shader dir: ${_infile}"
-        VERBATIM
-      )
+    # copy original into generated dir (prep_shaders.sh may override)
+    add_custom_command(OUTPUT "${_sanitized}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_infile}" "${_sanitized}"
+      DEPENDS "${_infile}"
+      COMMENT "Copy shader source to generated dir: ${_infile}"
+      VERBATIM
+    )
+
+    # decide compile stage in CMake (no slice syntax)
+    if(_ext_l STREQUAL ".comp")
+      set(_stage "comp")
+    elseif(_ext_l STREQUAL ".frag")
+      set(_stage "frag")
+    elseif(_ext_l STREQUAL ".vert")
+      set(_stage "vert")
     else()
-      # if not generating shaders, compile from original files (or copy .spv)
-      set(_sanitized "${_infile}")
+      # fallback: treat .glsl as compute by default (adjust if needed)
+      set(_stage "comp")
     endif()
 
-    # Decide whether the file is an entrypoint (compile) or a header (skip compile)
-    # We detect entrypoints by looking for 'void main' or 'main(' within the sanitized file.
-    # Use a custom command that will at configure-time read the file contents to decide.
-    # For portability, we'll create a rule that compiles only if file contains main; otherwise just copy.
+    # compile only if entrypoint detected (grep for main), else touch spv (no compile)
+    # Use a shell snippet executed by CMake to run the chosen compiler.
     add_custom_command(OUTPUT "${_out_spv}"
       COMMAND ${CMAKE_COMMAND} -E echo "Checking shader entrypoint for ${_sanitized}"
-      # If the sanitized file contains 'void main' or 'main(', attempt compile; else just copy (no compile)
       COMMAND ${CMAKE_COMMAND} -E sh -c "
         if grep -qE 'void[[:space:]]+main[[:space:]]*\\(|main[[:space:]]*\\(' '${_sanitized}'; then
           echo 'Entrypoint detected: compiling ${_sanitized}';
           if [ -n \"${GLSLANG_VALIDATOR}\" ]; then
-            ${GLSLANG_VALIDATOR} -V --target-env ${SHADER_TARGET_ENV} -I '${GENERATED_SHADER_DIR}' -S ${_ext_l:1} -o '${_out_spv}' '${_sanitized}';
+            \"${GLSLANG_VALIDATOR}\" -V --target-env ${SHADER_TARGET_ENV} -I '${GENERATED_SHADER_DIR}' -S ${_stage} -o '${_out_spv}' '${_sanitized}';
           else
-            ${GLSLC_EXEC} -fshader-stage=${_ext_l:1} --target-env=${SHADER_TARGET_ENV} -I '${GENERATED_SHADER_DIR}' '${_sanitized}' -o '${_out_spv}';
+            \"${GLSLC_EXEC}\" -fshader-stage=${_stage} --target-env=${SHADER_TARGET_ENV} -I '${GENERATED_SHADER_DIR}' '${_sanitized}' -o '${_out_spv}';
           fi
         else
           echo 'No entrypoint found in ${_sanitized}: skipping compile (treat as include/header)';
@@ -124,11 +127,11 @@ if(EXISTS "${SHADERS_SRC_DIR}")
         fi
       "
       DEPENDS "${_sanitized}"
-      COMMENT "Compile or skip shader ${_sanitized}"
+      COMMENT "Compile-or-skip shader ${_sanitized}"
       VERBATIM
     )
 
-    # Only embed when SPIR-V actually exists (touch may create placeholder)
+    # embed spv into c (if spv file has content then xxd, else create placeholder comment)
     add_custom_command(OUTPUT "${_out_c}"
       COMMAND ${CMAKE_COMMAND} -E echo "Embedding SPIR-V ${_out_spv} -> ${_out_c}"
       COMMAND ${CMAKE_COMMAND} -E sh -c "if [ -s '${_out_spv}' ]; then ${XXD_EXEC} -i '${_out_spv}' > '${_out_c}'; else echo '/* no spv generated for ${_base} */' > '${_out_c}'; fi"
@@ -141,7 +144,6 @@ if(EXISTS "${SHADERS_SRC_DIR}")
   endforeach()
 endif()
 
-# Ensure generate_shaders target exists and depends on normalization + prep
 if(GENERATED_SHADER_C_FILES)
   add_custom_target(exy_generate_shaders DEPENDS ${GENERATED_SHADER_C_FILES})
   add_dependencies(exy_generate_shaders exy_repo_normalize_shaders)
