@@ -2,6 +2,8 @@
 #define XENO_BC_H_
 
 #include <vulkan/vulkan.h>
+#include <stddef.h>
+#include <stdint.h>
 
 typedef enum VkImageBCFormat {
     VK_IMAGE_BC1 = 0,
@@ -14,6 +16,7 @@ typedef enum VkImageBCFormat {
 } VkImageBCFormat;
 
 struct XenoBCContext;
+
 VkResult xeno_bc_create_context(VkDevice device, VkPhysicalDevice physical, VkQueue queue, struct XenoBCContext **out_ctx);
 void xeno_bc_destroy_context(struct XenoBCContext *ctx);
 VkResult xeno_bc_decode_image(VkCommandBuffer cmd, struct XenoBCContext *ctx, const void *host_data, size_t host_size, VkBuffer src_buffer, VkImageView dst_view, VkImageBCFormat format, VkExtent3D extent);
