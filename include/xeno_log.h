@@ -2,11 +2,14 @@
 #define XENO_LOG_H_
 
 #include <stdio.h>
-#include <stdarg.h>
 #include "logging.h"
 
 #ifndef XENO_LOGE
 #define XENO_LOGE(...) logging_error(__VA_ARGS__)
+#endif
+
+#ifndef XENO_LOGW
+#define XENO_LOGW(...) logging_warn(__VA_ARGS__)
 #endif
 
 #ifndef XENO_LOGI
