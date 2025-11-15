@@ -15,28 +15,60 @@ endif()
 option(FAIL_ON_WARNINGS "Treat compiler warnings as errors" OFF)
 option(ENABLE_VERBOSE_BUILD "Show verbose compiler/linker commands" OFF)
 
-# Source discovery
-file(GLOB_RECURSE EXYNOSTOOLS_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*/*/*.c"
+# Root paths (adjust if your repo layout changes)
+set(PROJ_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+set(SRC_DIR "${PROJ_ROOT}/src")
+set(INCLUDE_DIR "${PROJ_ROOT}/include")
+
+# Discover all .c sources under src
+file(GLOB_RECURSE ALL_C_SOURCES
+    "${SRC_DIR}/*.c"
 )
 
-if(NOT EXYNOSTOOLS_SOURCES)
-  message(FATAL_ERROR "No source files found under src/ — check repository layout")
+if(NOT ALL_C_SOURCES)
+  message(FATAL_ERROR "No C source files found under ${SRC_DIR} — check repository layout")
 endif()
 
-# Executable
-add_executable(exynostools ${EXYNOSTOOLS_SOURCES})
+# Identify the dedicated logging implementation source (the TU that must provide non-inline linkage).
+# If your logging TU is at src/logging.c, we treat it specially by compiling it as an OBJECT target
+# with XENO_LOG_IMPLEMENTATION_PRESENT defined for that TU only.
+set(LOGGING_REL_PATH "src/logging.c")
+set(LOGGING_ABS_PATH "${PROJ_ROOT}/${LOGGING_REL_PATH}")
 
-# Include directories (project headers)
+# Ensure logging file exists before applying special handling
+set(HAVE_LOGGING_SRC OFF)
+foreach(f ${ALL_C_SOURCES})
+  if(f MATCHES "${LOGGING_ABS_PATH}$")
+    set(HAVE_LOGGING_SRC ON)
+  endif()
+endforeach()
+
+# Build an OBJECT library for logging.c when present and define XENO_LOG_IMPLEMENTATION_PRESENT for it.
+set(OTHER_SOURCES ${ALL_C_SOURCES})
+if(HAVE_LOGGING_SRC)
+  list(REMOVE_ITEM OTHER_SOURCES "${LOGGING_ABS_PATH}")
+  add_library(logging_obj OBJECT "${LOGGING_ABS_PATH}")
+  target_include_directories(logging_obj PRIVATE "${INCLUDE_DIR}" "${SRC_DIR}")
+  target_compile_definitions(logging_obj PRIVATE XENO_LOG_IMPLEMENTATION_PRESENT)
+  target_compile_options(logging_obj PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wmissing-prototypes)
+endif()
+
+# Create the main executable from the remaining sources and the logging object (if created)
+add_executable(exynostools ${OTHER_SOURCES})
+
+# If logging_obj exists, link its objects into the executable via $<TARGET_OBJECTS:...>
+if(HAVE_LOGGING_SRC)
+  target_sources(exynostools PRIVATE $<TARGET_OBJECTS:logging_obj>)
+endif()
+
+# Ensure include/ and src/ are provided to all translation units
 target_include_directories(exynostools
     PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${INCLUDE_DIR}"
+        "${SRC_DIR}"
 )
 
-# Compiler options (common)
+# Compiler flags for the main target
 target_compile_options(exynostools PRIVATE
     -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wmissing-prototypes
 )
@@ -78,7 +110,7 @@ if(THREADS_FOUND)
     target_link_libraries(exynostools PRIVATE Threads::Threads)
 endif()
 
-# Useful preprocessor defines
+# Useful preprocessor defines (Debug flag to TUs when building Debug)
 target_compile_definitions(exynostools PRIVATE
     $<$<CONFIG:Debug>:DEBUG=1>
 )
@@ -88,20 +120,24 @@ install(TARGETS exynostools
     RUNTIME DESTINATION bin
 )
 
-# Helper target for CI debugging
+# Helper target for CI debugging: prints configuration and discovered sources
 add_custom_target(show_configuration
     COMMAND ${CMAKE_COMMAND} -E echo "CMake generator: ${CMAKE_GENERATOR}"
     COMMAND ${CMAKE_COMMAND} -E echo "Build type: ${CMAKE_BUILD_TYPE}"
+    COMMAND ${CMAKE_COMMAND} -E echo "Have logging TU (src/logging.c): ${HAVE_LOGGING_SRC}"
     COMMAND ${CMAKE_COMMAND} -E echo "Target is aarch64: ${TARGET_IS_AARCH64}"
-    COMMAND ${CMAKE_COMMAND} -E echo "Include dirs: ${CMAKE_CURRENT_SOURCE_DIR}/include;${CMAKE_CURRENT_SOURCE_DIR}/src"
-    COMMAND ${CMAKE_COMMAND} -E echo "Source files found: ${EXYNOSTOOLS_SOURCES}"
+    COMMAND ${CMAKE_COMMAND} -E echo "Include dirs: ${INCLUDE_DIR};${SRC_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E echo "Source count (all): ${ALL_C_SOURCES}"
 )
 
-# Developer notes (do not modify unless you understand toolchain)
+# Developer notes
+# - The build arranges so that src/logging.c is compiled with XENO_LOG_IMPLEMENTATION_PRESENT
+#   thus include/xeno_log.h exposes non-inline prototypes only for that TU, avoiding static vs non-static conflicts.
+# - Other TUs include include/xeno_log.h and will either get the inline fallbacks (if logging.c is not present)
+#   or will link to the single logging implementation (if logging.c is present).
+# - To rebuild cleanly in CI, remove the previous build directory entirely between attempts:
+#     rm -rf build-android && cmake -S . -B build-android <toolchain args> && cmake --build build-android -- -j$(nproc)
+#
 # - For Android/NDK out-of-tree build example:
 #     cmake -S . -B build-android -D CMAKE_TOOLCHAIN_FILE=${ANDROID_NDK}/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31
 #     cmake --build build-android -- -j$(nproc)
-#
-# - If CI injects extra linker flags, guard them here with TARGET_IS_AARCH64 check.
-#
-# - Ensure your CI config sets CMAKE_SYSTEM_NAME and CMAKE_SYSTEM_PROCESSOR correctly for cross builds.
