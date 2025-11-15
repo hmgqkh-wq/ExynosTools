@@ -1,88 +1,69 @@
 // src/xeno_wrapper.c
 // Full drop-in replacement for xeno_wrapper.c
-// - Wraps vkCreateDevice and a render-pass begin call used by the project
-// - Declares required externs and uses minimal logic to initialize a XenoBCContext
-// - C99-compliant, avoids implicit declarations and unused warnings
+// Matches the public prototype in include/xeno_bc.h exactly.
 
 #include <vulkan/vulkan.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include "xeno_bc.h"
 #include "xeno_log.h"
+#include "xeno_bc.h"
 
-/* External originals and utilities the wrapper forwards to.
-   These symbols are expected to be provided by the platform or loader. */
+/* External original functions provided by the loader or platform.
+   These are expected to be resolved at link/runtime by your environment. */
 extern PFN_vkCreateDevice vkCreateDevice_original;
 extern PFN_vkCmdBeginRenderPass vkCmdBeginRenderPass_original;
-extern PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr_original;
 
-/* Forward declaration of optionally provided functions in other modules.
-   If they are not present at link-time, provide weak stubs below. */
-extern XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice physical);
-extern void apply_vrs(VkCommandBuffer cmd, VkExtent2D extent);
+/* Use the exact prototype from include/xeno_bc.h */
+extern VkResult xeno_bc_create_context(VkDevice device, VkPhysicalDevice physical, VkQueue queue, struct XenoBCContext **out_ctx);
+extern void xeno_bc_destroy_context(struct XenoBCContext *ctx);
 
-/* Weak stubs to avoid link errors if the real implementations are omitted.
-   Use attribute weak where available; otherwise provide non-fatal defaults. */
-#if defined(__GNUC__)
-__attribute__((weak))
-#endif
-XenoBCContext* xeno_bc_create_context(VkDevice device, VkPhysicalDevice physical) {
-    (void)device; (void)physical;
-    return NULL;
-}
-
-#if defined(__GNUC__)
-__attribute__((weak))
-#endif
-void apply_vrs(VkCommandBuffer cmd, VkExtent2D extent) {
-    (void)cmd; (void)extent; /* no-op fallback */
-}
-
-/* Safe wrapper for vkCreateDevice.
-   Calls the original implementation, then attempts to create Xeno BC context
-   (best-effort; non-fatal if context creation fails). */
+/* Wrapper that creates a device and attempts to initialize the BC context.
+   This strictly follows the header's xeno_bc_create_context signature. */
 VkResult xeno_wrapper_create_device(VkPhysicalDevice physicalDevice,
                                     const VkDeviceCreateInfo *pCreateInfo,
                                     const VkAllocationCallbacks *pAllocator,
                                     VkDevice *pDevice)
 {
     if (!vkCreateDevice_original) {
-        XENO_LOGE("xeno_wrapper: vkCreateDevice_original not available");
+        XENO_LOGE("xeno_wrapper_create_device: vkCreateDevice_original not available");
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
     VkResult res = vkCreateDevice_original(physicalDevice, pCreateInfo, pAllocator, pDevice);
     if (res != VK_SUCCESS) {
-        XENO_LOGE("xeno_wrapper: vkCreateDevice_original failed: %d", res);
+        XENO_LOGE("xeno_wrapper_create_device: vkCreateDevice_original failed: %d", res);
         return res;
     }
 
-    /* Best-effort: create BC context if implementation is present. */
-    XenoBCContext* ctx = xeno_bc_create_context(*pDevice, physicalDevice);
-    if (!ctx) {
-        XENO_LOGI("xeno_wrapper: xeno_bc_create_context not available or failed (non-fatal)");
+    /* Best-effort: create BC context if a queue is available from the created device.
+       We query a queue index 0 for the first queue family present in pCreateInfo (if available). */
+    struct XenoBCContext *bc_ctx = NULL;
+    VkQueue queue = VK_NULL_HANDLE;
+
+    if (pCreateInfo && pCreateInfo->queueCreateInfoCount > 0 && pCreateInfo->pQueueCreateInfos) {
+        /* Request the first queue from the created device (family 0, index 0) */
+        vkGetDeviceQueue(*pDevice, 0u, 0u, &queue);
+    }
+
+    /* Call the header-matching function. If it fails, continue — non-fatal for wrapper. */
+    res = xeno_bc_create_context(*pDevice, physicalDevice, queue, &bc_ctx);
+    if (res != VK_SUCCESS) {
+        XENO_LOGI("xeno_wrapper_create_device: xeno_bc_create_context not available or failed (code %d) — continuing without BC context", res);
     } else {
-        XENO_LOGI("xeno_wrapper: xeno_bc context created");
-        /* Optionally store context somewhere global if needed by other wrappers */
+        XENO_LOGI("xeno_wrapper_create_device: xeno_bc context created");
+        /* If you need to stash bc_ctx globally, do so here; leaving local to avoid assumptions. */
+        /* Example: global_bc_ctx = bc_ctx; */
+        (void)bc_ctx;
     }
 
     return VK_SUCCESS;
 }
 
-/* Wrapper for beginning a render pass that applies VRS prior to forwarding. */
+/* Wrapper for beginning a render pass that forwards to the original begin call.
+   This keeps behavior simple and avoids implicit declarations. */
 void xeno_wrapper_begin_render(VkCommandBuffer commandBuffer,
                                const VkRenderPassBeginInfo *pRenderPassBeginInfo,
                                VkSubpassContents contents)
 {
-    if (!pRenderPassBeginInfo) {
-        XENO_LOGE("xeno_wrapper_begin_render: null render pass info");
-        return;
-    }
-
-    /* Apply variable-rate shading or other instrumentation if implemented */
-    apply_vrs(commandBuffer, pRenderPassBeginInfo->renderArea.extent);
-
-    /* Forward to original begin render pass if available */
     if (vkCmdBeginRenderPass_original) {
         vkCmdBeginRenderPass_original(commandBuffer, pRenderPassBeginInfo, contents);
     } else {
@@ -90,9 +71,13 @@ void xeno_wrapper_begin_render(VkCommandBuffer commandBuffer,
     }
 }
 
-/* Exported no-op cleanup helper (keeps symbol present and avoids warnings). */
-void xeno_wrapper_destroy(void)
+/* Optional destroy helper that will clean up BC context if needed. */
+void xeno_wrapper_destroy(struct XenoBCContext *maybe_ctx)
 {
-    /* If xeno_bc had global cleanup, call it here (not present in stub). */
-    XENO_LOGI("xeno_wrapper: destroy called");
+    if (maybe_ctx) {
+        xeno_bc_destroy_context(maybe_ctx);
+        XENO_LOGI("xeno_wrapper_destroy: BC context destroyed");
+    } else {
+        XENO_LOGI("xeno_wrapper_destroy: nothing to destroy");
+    }
 }
