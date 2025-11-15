@@ -2,47 +2,45 @@ name: Build and Package ExynosTools
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Set up dependencies
+      - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y cmake ninja-build zstd glslang-tools libvulkan-dev xxd
 
       - name: Configure CMake
         run: |
-          cmake -S . -B build-android -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake -S . -B build-android \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/ \
+            -G Ninja
 
-      - name: Build exynostools
-        run: |
-          cmake --build build-android --target exynostools -- -j$(nproc)
+      - name: Build
+        run: cmake --build build-android -- -j$(nproc)
 
-      - name: Prepare artifact structure
+      - name: Install to staging dir
         run: |
-          mkdir -p xafan/exynostools-android-arm64/usr/bin
-          mkdir -p xafan/exynostools-android-arm64/assets/shaders/decode
-          if [ -f build-android/exynostools ]; then cp build-android/exynostools xafan/exynostools-android-arm64/usr/bin/; fi
-          # copy any generated SPIR-V for inspection
-          if [ -d build-android/shaders ]; then find build-android/shaders -type f -name "*.spv" -exec cp {} xafan/exynostools-android-arm64/assets/shaders/decode/ \;; fi
+          DESTDIR=staging cmake --install build-android
 
-      - name: Create compressed artifact
+      - name: Package (CPack)
         run: |
-          tar -cf exynostools-android-arm64.tar -C xafan exynostools-android-arm64 || true
-          if [ -f exynostools-android-arm64.tar ]; then zstd exynostools-android-arm64.tar; fi
+          cd build-android
+          cpack -G TXZ --config CPackConfig.cmake
+          mv *.tar.xz ../exynostools-android-arm64.tar.xz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: exynostools-android-arm64
-          path: exynostools-android-arm64.tar.zst
+          path: exynostools-android-arm64.tar.xz
