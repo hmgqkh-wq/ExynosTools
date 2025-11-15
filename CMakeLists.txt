@@ -1,199 +1,167 @@
-cmake_minimum_required(VERSION 3.13)
-project(ExynosTools C)
+cmake_minimum_required(VERSION 3.15)
+project(exynostools C)
 
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_C_EXTENSIONS OFF)
+# --- Basic options ---
+option(BUILD_SHADERS "Compile GLSL shaders to SPIR-V and embed them into C" ON)
+option(BUILD_SHARED_LIBS "Build as shared libraries where appropriate" OFF)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+# --- Helpful variables ---
+set(SHADERS_DIR "${CMAKE_SOURCE_DIR}/assets/shaders")
+set(GENERATED_SHADER_DIR "${CMAKE_BINARY_DIR}/generated_shaders")
+file(MAKE_DIRECTORY "${GENERATED_SHADER_DIR}")
+include_directories("${CMAKE_SOURCE_DIR}/include" "${GENERATED_SHADER_DIR}")
+
+# --- Find tools: glslc and xxd (xxd is used to embed the .spv binary into C-arrays) ---
+find_program(GLSLC_EXEC glslc)
+find_program(XXD_EXEC xxd)
+
+if(BUILD_SHADERS)
+  if(NOT XXD_EXEC)
+    message(FATAL_ERROR "xxd not found (needed to embed SPIR-V into C). Install xxd or set BUILD_SHADERS=OFF.")
+  endif()
 endif()
 
-option(FAIL_ON_WARNINGS "Treat compiler warnings as errors" OFF)
-option(ENABLE_VERBOSE_BUILD "Show verbose compiler/linker commands" OFF)
-
-set(PROJ_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
-set(SRC_DIR "${PROJ_ROOT}/src")
-set(INCLUDE_DIR "${PROJ_ROOT}/include")
-set(BUILD_DIR "${CMAKE_BINARY_DIR}")
-set(SHADER_BUILD_DIR "${BUILD_DIR}/shaders")
-set(GENERATED_HEADER_DIR "${BUILD_DIR}/generated_includes")
-set(GENERATED_EMBED_SRC "${BUILD_DIR}/shaders_embed.c")
-
-include_directories("${INCLUDE_DIR}")
-include_directories("${SRC_DIR}")
-include_directories("${GENERATED_HEADER_DIR}")
-include_directories("${BUILD_DIR}")
-
-# Find external tools
-find_program(GLSLANG_BIN glslangValidator)
-find_program(XXD_BIN xxd)
-find_program(HEXDUMP_BIN hexdump)
-
-if(NOT GLSLANG_BIN)
-  message(FATAL_ERROR "glslangValidator not found. Install glslang-tools or provide path.")
-endif()
-if(NOT XXD_BIN AND NOT HEXDUMP_BIN)
-  message(FATAL_ERROR "Neither xxd nor hexdump found; install one of them.")
-endif()
-
-# Gather shader sources
-file(GLOB_RECURSE SHADER_SOURCES_REL RELATIVE "${PROJ_ROOT}" "${SRC_DIR}/*.comp" "${SRC_DIR}/*.frag" "${SRC_DIR}/*.vert" "${SRC_DIR}/*.glsl")
-
-set(SPIRV_OUTS "")
-set(SPIRV_HEADERS "")
-
-foreach(rel IN LISTS SHADER_SOURCES_REL)
-  set(SRC_ABS "${PROJ_ROOT}/${rel}")
-  get_filename_component(DIR_PART "${rel}" DIRECTORY)
-  get_filename_component(NAME_WE "${rel}" NAME_WE)
-
-  set(SPV_OUT "${SHADER_BUILD_DIR}/${DIR_PART}/${NAME_WE}.spv")
-  list(APPEND SPIRV_OUTS "${SPV_OUT}")
-
-  # create stable flattened header basename: dir_name_name_shader_spv.h
-  string(REPLACE "/" "_" HDR_BASENAME "${DIR_PART}_${NAME_WE}_shader_spv.h")
-  set(HEADER_OUT "${GENERATED_HEADER_DIR}/${HDR_BASENAME}")
-  list(APPEND SPIRV_HEADERS "${HEADER_OUT}")
-
-  add_custom_command(
-    OUTPUT "${SPV_OUT}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<SHELL_PATH:${SHADER_BUILD_DIR}/${DIR_PART}>"
-    COMMAND ${GLSLANG_BIN} -V "${SRC_ABS}" -o "${SPV_OUT}"
-    DEPENDS "${SRC_ABS}"
-    COMMENT "Compiling ${rel} -> ${SPV_OUT}"
-    VERBATIM
+# --- Collect shader source files (GLSL/SPV). We'll produce a .c embed per shader. ---
+set(_shader_sources "")
+if(EXISTS "${SHADERS_DIR}")
+  file(GLOB_RECURSE _glsl_files
+    "${SHADERS_DIR}/*.comp"
+    "${SHADERS_DIR}/*.frag"
+    "${SHADERS_DIR}/*.vert"
+    "${SHADERS_DIR}/*.glsl"
+    "${SHADERS_DIR}/*.spv"
+    "${SHADERS_DIR}/*.spvasm"
   )
 
-  if(XXD_BIN)
-    # xxd -i path then normalize names to <NAME_WE>_shader_spv and <NAME_WE>_shader_spv_len
+  foreach(_infile IN LISTS _glsl_files)
+    get_filename_component(_inname ${_infile} NAME_WE)       # base name
+    get_filename_component(_inext ${_infile} EXT)           # extension with dot
+    string(REPLACE "." "" _inext_no_dot "${_inext}")
+
+    # normalized base filename for generated files
+    set(_out_spv "${GENERATED_SHADER_DIR}/${_inname}.spv")
+    set(_out_c  "${GENERATED_SHADER_DIR}/${_inname}_spv.c")
+
+    if(BUILD_SHADERS)
+      # If the file is already a .spv, we just copy; otherwise try to compile with glslc
+      string(TOLOWER "${_inext_no_dot}" _ext_lower)
+      if("${_ext_lower}" STREQUAL "spv")
+        add_custom_command(
+          OUTPUT "${_out_spv}"
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_infile}" "${_out_spv}"
+          DEPENDS "${_infile}"
+          COMMENT "Copy existing SPIR-V: ${_infile} -> ${_out_spv}"
+          VERBATIM
+        )
+      else()
+        if(NOT GLSLC_EXEC)
+          message(FATAL_ERROR "glslc not found but required to compile shader ${_infile}. Install shaderc/glslc or set BUILD_SHADERS=OFF and provide prebuilt .spv files.")
+        endif()
+        add_custom_command(
+          OUTPUT "${_out_spv}"
+          COMMAND ${GLSLC_EXEC} "${_infile}" -o "${_out_spv}"
+          DEPENDS "${_infile}"
+          WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+          COMMENT "Compiling shader ${_infile} -> ${_out_spv}"
+          VERBATIM
+        )
+      endif()
+    else()
+      # If BUILD_SHADERS=OFF: only consider prebuilt .spv files in the shaders dir
+      if("${_ext_lower}" STREQUAL "spv")
+        add_custom_command(
+          OUTPUT "${_out_spv}"
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_infile}" "${_out_spv}"
+          DEPENDS "${_infile}"
+          COMMENT "Copy prebuilt SPIR-V: ${_infile} -> ${_out_spv}"
+          VERBATIM
+        )
+      else()
+        # skip non-spv sources when BUILD_SHADERS=OFF
+        continue()
+      endif()
+    endif()
+
+    # Embed the .spv into a C source using xxd -i (makes symbols like "<name>_spv" and "<name>_spv_len")
     add_custom_command(
-      OUTPUT "${HEADER_OUT}"
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_HEADER_DIR}"
-      COMMAND ${XXD_BIN} -i "${SPV_OUT}" > "${HEADER_OUT}.tmp"
-      COMMAND ${CMAKE_COMMAND} -E env sh -c "sed -E -e 's/^unsigned char /const uint8_t /' -e 's/unsigned int (.*)_spv_len/const size_t \\1_shader_spv_len/' -e 's/unsigned char (.*)_spv\\[\\]/const uint8_t \\1_shader_spv[]/' '${HEADER_OUT}.tmp' > '${HEADER_OUT}'"
-      COMMAND ${CMAKE_COMMAND} -E remove "${HEADER_OUT}.tmp"
-      DEPENDS "${SPV_OUT}"
-      COMMENT "Converting ${SPV_OUT} -> header ${HEADER_OUT} (xxd)"
+      OUTPUT "${_out_c}"
+      COMMAND ${CMAKE_COMMAND} -E echo "/* Auto-generated shader embed for ${_inname} */" > "${_out_c}"
+      COMMAND ${XXD_EXEC} -i "${_out_spv}" >> "${_out_c}"
+      DEPENDS "${_out_spv}"
+      COMMENT "Embedding SPIR-V ${_out_spv} -> ${_out_c}"
       VERBATIM
     )
-  else()
-    # hexdump fallback: emit uint32_t arrays (portable) with naming <NAME_WE>_shader_spv
-    add_custom_command(
-      OUTPUT "${HEADER_OUT}"
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_HEADER_DIR}"
-      COMMAND ${CMAKE_COMMAND} -E env sh -c "echo '#include <stddef.h>' > '${HEADER_OUT}'; echo '#include <stdint.h>' >> '${HEADER_OUT}'; echo 'const uint32_t ${NAME_WE}_shader_spv[] = {' >> '${HEADER_OUT}'; ${HEXDUMP_BIN} -v -e '4/4 \"0x%08x, \" \"\\\\n\"' '${SPV_OUT}' >> '${HEADER_OUT}'; echo '};' >> '${HEADER_OUT}'; echo 'const size_t ${NAME_WE}_shader_spv_len = (sizeof(${NAME_WE}_shader_spv)/sizeof(${NAME_WE}_shader_spv[0]));' >> '${HEADER_OUT}'"
-      DEPENDS "${SPV_OUT}"
-      COMMENT "Converting ${SPV_OUT} -> header ${HEADER_OUT} (hexdump)"
-      VERBATIM
-    )
-  endif()
-endforeach()
 
-if(SPIRV_OUTS)
-  add_custom_target(compile_spirv ALL DEPENDS ${SPIRV_OUTS})
-endif()
-if(SPIRV_HEADERS)
-  add_custom_target(spv_to_c_headers ALL DEPENDS ${SPIRV_HEADERS})
+    list(APPEND _shader_sources "${_out_c}")
+  endforeach()
 endif()
 
-# Generate a single C source that includes all generated headers
-add_custom_command(
-  OUTPUT "${GENERATED_EMBED_SRC}"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_HEADER_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E echo "/* Auto-generated: include shader headers */" > "${GENERATED_EMBED_SRC}"
-  COMMAND ${CMAKE_COMMAND} -E env sh -c "for h in ${SPIRV_HEADERS}; do echo \"#include \\\"$(basename \\\"\\$h\\\")\\\"\" >> \"${GENERATED_EMBED_SRC}\"; done"
-  DEPENDS ${SPIRV_HEADERS}
-  COMMENT "Generating ${GENERATED_EMBED_SRC}"
-  VERBATIM
+# Create a phony target that generates shader C files
+if(_shader_sources)
+  add_custom_target(generate_shaders DEPENDS ${_shader_sources})
+else()
+  add_custom_target(generate_shaders)
+endif()
+
+# --- Collect project sources (all C files under src/) ---
+file(GLOB_RECURSE PROJECT_SRCS
+  "${CMAKE_SOURCE_DIR}/src/*.c"
 )
 
-add_custom_target(gen_shaders_embed ALL DEPENDS "${GENERATED_EMBED_SRC}")
+# Check: if bc_emulate.c references shader symbols like bc2_shader_spv, ensure generated files are included
+# We'll create an object target that depends on shader generation and then add everything to the final target.
+set(ALL_SRCS ${PROJECT_SRCS} ${_shader_sources})
 
-# Compile embed source into object library
-add_library(shaders_embed_obj OBJECT "${GENERATED_EMBED_SRC}")
-add_dependencies(shaders_embed_obj gen_shaders_embed)
-target_include_directories(shaders_embed_obj PRIVATE "${GENERATED_HEADER_DIR}")
+# --- Create the main target (exynostools). Adjust type if your project previously used SHARED. ---
+add_executable(exynostools ${ALL_SRCS})
+add_dependencies(exynostools generate_shaders)
 
-# Gather C sources, exclude shader directories and selfcheck.c from main target
-file(GLOB_RECURSE ALL_C_REL RELATIVE "${PROJ_ROOT}" "${SRC_DIR}/*.c")
-set(MAIN_SOURCES "")
-foreach(rel IN LISTS ALL_C_REL)
-  string(FIND "${rel}" "/shaders/" _has_shaders_dir)
-  string(FIND "${rel}" "/shader/" _has_shader_dir)
-  string(FIND "${rel}" "selfcheck.c" _is_selfcheck)
-  if(_has_shaders_dir EQUAL -1 AND _has_shader_dir EQUAL -1 AND _is_selfcheck EQUAL -1)
-    list(APPEND MAIN_SOURCES "${PROJ_ROOT}/${rel}")
-  endif()
-endforeach()
+# --- Include directories ---
+target_include_directories(exynostools PRIVATE
+  "${CMAKE_SOURCE_DIR}/include"
+  "${GENERATED_SHADER_DIR}"
+)
 
-if(NOT MAIN_SOURCES)
-  message(FATAL_ERROR "No C sources found under ${SRC_DIR}")
+# --- Compiler and link flags --- (conservative defaults, modify if you have special cross flags)
+if(NOT MSVC)
+  target_compile_options(exynostools PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# Optionally build logging.c as OBJECT to avoid symbol duplication if present
-set(LOGGING_REL "src/logging.c")
-set(LOGGING_ABS "${PROJ_ROOT}/${LOGGING_REL}")
-set(HAVE_LOGGING OFF)
-foreach(f IN LISTS MAIN_SOURCES)
-  if(f STREQUAL "${LOGGING_ABS}")
-    set(HAVE_LOGGING ON)
-  endif()
-endforeach()
-
-if(HAVE_LOGGING)
-  list(REMOVE_ITEM MAIN_SOURCES "${LOGGING_ABS}")
-  add_library(logging_obj OBJECT "${LOGGING_ABS}")
-  target_include_directories(logging_obj PRIVATE "${INCLUDE_DIR}" "${SRC_DIR}" "${GENERATED_HEADER_DIR}")
-  target_compile_definitions(logging_obj PRIVATE XENO_LOG_IMPLEMENTATION_PRESENT=1)
-  target_compile_options(logging_obj PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
-endif()
-
-# Main executable
-add_executable(exynostools ${MAIN_SOURCES})
-if(SPIRV_OUTS)
-  add_dependencies(exynostools compile_spirv)
-endif()
-if(SPIRV_HEADERS)
-  add_dependencies(exynostools spv_to_c_headers)
-endif()
-add_dependencies(exynostools gen_shaders_embed)
-if(HAVE_LOGGING)
-  target_sources(exynostools PRIVATE $<TARGET_OBJECTS:logging_obj>)
-endif()
-target_sources(exynostools PRIVATE $<TARGET_OBJECTS:shaders_embed_obj>)
-
-target_include_directories(exynostools PRIVATE "${INCLUDE_DIR}" "${SRC_DIR}" "${GENERATED_HEADER_DIR}" "${BUILD_DIR}")
-target_compile_options(exynostools PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
-if(FAIL_ON_WARNINGS)
-  target_compile_options(exynostools PRIVATE -Werror)
-endif()
-if(ENABLE_VERBOSE_BUILD)
-  set(CMAKE_VERBOSE_MAKEFILE ON)
-endif()
-
-# If you want a selfcheck tool in future, keep selfcheck.c but not built by default.
-# (You can add it manually as a separate target when needed.)
-
-# Vulkan and threads linking
+# --- Find Vulkan --- try the CMake FindVulkan module first; fallback to common patterns ---
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
+  message(STATUS "Found Vulkan via find_package: ${Vulkan_LIBRARY}")
   target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
   target_link_libraries(exynostools PRIVATE ${Vulkan_LIBRARIES})
+else()
+  # Fallback: try to find a libvulkan.so on the system
+  find_library(LIBVULKAN_NEEDED NAMES vulkan libvulkan vulkan-1 HINTS /usr/lib /usr/local/lib /lib)
+  if(LIBVULKAN_NEEDED)
+    message(STATUS "Linking with Vulkan library: ${LIBVULKAN_NEEDED}")
+    target_link_libraries(exynostools PRIVATE ${LIBVULKAN_NEEDED})
+  else()
+    message(WARNING "Vulkan not found. You may need to set Vulkan SDK paths or install libvulkan. Build may fail if Vulkan symbols are needed.")
+  endif()
 endif()
 
-find_package(Threads QUIET)
-if(THREADS_FOUND)
-  target_link_libraries(exynostools PRIVATE Threads::Threads)
+# Link recommended system libs (adjust per platform)
+if(UNIX)
+  find_package(Threads REQUIRED)
+  target_link_libraries(exynostools PRIVATE ${CMAKE_THREAD_LIBS_INIT})
+  # add dl if needed by loader operations
+  find_library(LIBDL dl)
+  if(LIBDL)
+    target_link_libraries(exynostools PRIVATE ${LIBDL})
+  endif()
 endif()
 
-target_compile_definitions(exynostools PRIVATE $<$<CONFIG:Debug>:DEBUG=1>)
-install(TARGETS exynostools RUNTIME DESTINATION bin)
-
-# Debug helpers
-string(REPLACE ";" " " SOURCES_JOINED "${MAIN_SOURCES}")
-add_custom_target(show_sources COMMENT "Show discovered C sources" COMMAND ${CMAKE_COMMAND} -E echo "${SOURCES_JOINED}")
-add_custom_target(show_configuration
-  COMMENT "Show configuration"
-  COMMAND ${CMAKE_COMMAND} -E echo "Build dir: ${BUILD_DIR}; Generated headers: ${GENERATED_HEADER_DIR}; Shader build dir: ${SHADER_BUILD_DIR}"
+# --- Final packaging-friendly flags ---
+set_target_properties(exynostools PROPERTIES
+  OUTPUT_NAME "exynostools"
 )
+
+# --- Install / packaging rules can be added here if you want ---
+message(STATUS "CMake configured. BUILD_SHADERS=${BUILD_SHADERS}. Generated shader directory: ${GENERATED_SHADER_DIR}")
