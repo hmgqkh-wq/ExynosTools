@@ -10,21 +10,18 @@ extern "C" {
 
 /*
   Logging API:
-  - If a translation unit defines XENO_LOG_IMPLEMENTATION_PRESENT before
-    including this header, this header exposes non-inline prototypes and
-    that translation unit must provide definitions (see src/logging.c).
-  - Otherwise, header provides static inline fallbacks.
+  - src/logging.c defines XENO_LOG_IMPLEMENTATION_PRESENT and provides a single non-inline implementation.
+  - Other TUs include this header to get inline fallbacks if logging.c is not present.
 */
 
 #ifdef XENO_LOG_IMPLEMENTATION_PRESENT
 
-/* Non-inline prototypes for linkable implementation */
 void logging_info(const char *fmt, ...);
 void logging_warn(const char *fmt, ...);
 void logging_error(const char *fmt, ...);
 void logging_debug(const char *fmt, ...);
 
-#else /* header-only fallbacks */
+#else
 
 #include <stdio.h>
 
@@ -54,7 +51,6 @@ static inline void logging_debug(const char *fmt, ...)
 
 #endif /* XENO_LOG_IMPLEMENTATION_PRESENT */
 
-/* Convenience macros */
 #define XENO_LOGI(...) logging_info(__VA_ARGS__)
 #define XENO_LOGW(...) logging_warn(__VA_ARGS__)
 #define XENO_LOGE(...) logging_error(__VA_ARGS__)
