@@ -11,7 +11,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Output paths
+# Output paths (ensure libxeno_wrapper.so lands in build/ for your script)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
@@ -91,6 +91,7 @@ if(EXISTS "${SHADERS_SRC_DIR}")
           COMMAND ${GLSLANG_VALIDATOR} -V --target-env ${SHADER_TARGET_ENV} -S ${_stage} -o "${_out_spv}" "${_sanitized}"
           DEPENDS "${_sanitized}"
           COMMENT "Compile shader ${_sanitized}"
+          VERBATIM
         )
       elseif(GLSLC_EXEC)
         add_custom_command(
@@ -98,6 +99,7 @@ if(EXISTS "${SHADERS_SRC_DIR}")
           COMMAND ${GLSLC_EXEC} -fshader-stage=${_stage} --target-env=${SHADER_TARGET_ENV} "${_sanitized}" -o "${_out_spv}"
           DEPENDS "${_sanitized}"
           COMMENT "Compile shader ${_sanitized}"
+          VERBATIM
         )
       else()
         add_custom_command(
@@ -105,6 +107,25 @@ if(EXISTS "${SHADERS_SRC_DIR}")
           COMMAND ${CMAKE_COMMAND} -E touch "${_out_spv}"
           DEPENDS "${_sanitized}"
           COMMENT "Placeholder SPV"
+          VERBATIM
+        )
+      endif()
+    else()
+      if(_ext_l STREQUAL ".spv")
+        add_custom_command(
+          OUTPUT "${_out_spv}"
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_infile}" "${_out_spv}"
+          DEPENDS "${_infile}"
+          COMMENT "Copy prebuilt SPV ${_infile}"
+          VERBATIM
+        )
+      else()
+        add_custom_command(
+          OUTPUT "${_out_spv}"
+          COMMAND ${CMAKE_COMMAND} -E touch "${_out_spv}"
+          DEPENDS "${_sanitized}"
+          COMMENT "Placeholder SPV (shaders disabled)"
+          VERBATIM
         )
       endif()
     endif()
@@ -115,6 +136,7 @@ if(EXISTS "${SHADERS_SRC_DIR}")
       COMMAND ${XXD_EXEC} -i "${_out_spv}" "${_out_c}"
       DEPENDS "${_out_spv}"
       COMMENT "Embed SPV ${_out_spv}"
+      VERBATIM
     )
 
     list(APPEND GENERATED_SHADER_C_FILES "${_out_c}")
@@ -157,7 +179,27 @@ if(EXISTS "${DRIVERS_XCLIPSE_DIR}")
   file(GLOB_RECURSE XCLIPSE_SRCS "${DRIVERS_XCLIPSE_DIR}/*.c" "${DRIVERS_XCLIPSE_DIR}/*.h")
 endif()
 
-add_library(xeno_wrapper SHARED ${XCLIPSE_SRCS})
+# Wrapper sources (include key feature units if present)
+set(WRAPPER_SRCS)
+foreach(f
+  xeno_wrapper.c
+  xclipse_wrapper.c
+  rt_path.c
+  async.c
+  vrs.c
+  emulate.c
+  bc_emulate.c
+  create_common_layouts_and_pipelines.c
+  logging.c
+  perf_conf.c
+  features_patch.c
+)
+  if(EXISTS "${SRC_DIR}/${f}")
+    list(APPEND WRAPPER_SRCS "${SRC_DIR}/${f}")
+  endif()
+endforeach()
+
+add_library(xeno_wrapper SHARED ${XCLIPSE_SRCS} ${WRAPPER_SRCS})
 add_dependencies(xeno_wrapper exy_generate_shaders)
 target_include_directories(xeno_wrapper PRIVATE "${INCLUDE_DIR}" "${DRIVERS_XCLIPSE_DIR}" "${GENERATED_SHADER_DIR}")
 
@@ -165,7 +207,11 @@ if(GENERATED_SHADER_C_FILES)
   target_sources(xeno_wrapper PRIVATE ${GENERATED_SHADER_C_FILES})
 endif()
 
-set_target_properties(xeno_wrapper PROPERTIES OUTPUT_NAME "xeno_wrapper")
+set_target_properties(xeno_wrapper PROPERTIES
+  OUTPUT_NAME "xeno_wrapper"
+  C_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
 
 if(NOT MSVC)
   target_compile_options(xeno_wrapper PRIVATE -fPIC -fvisibility=hidden -O3 -Wall -Wextra -Wno-unused-parameter)
@@ -182,6 +228,9 @@ else()
     target_link_libraries(xeno_wrapper PRIVATE ${LIBVULKAN_NEEDED})
   endif()
 endif()
+
+# Export init symbol expectation (ensure xeno_init exists in sources)
+target_compile_definitions(xeno_wrapper PRIVATE XENO_EXPORT_INIT_SYMBOL=xeno_init)
 
 # ---------------------- Host executable ----------------------------------
 add_executable(exynostools ${PROJECT_SRCS})
@@ -211,6 +260,25 @@ if(ENABLE_LTO AND NOT DEFINED ANDROID_NDK_HOME)
   endif()
 endif()
 
-# ---------------------- Install layout -----------------------------------
+# ---------------------- Install layout (Winlator-style staging) ----------
 install(TARGETS xeno_wrapper LIBRARY DESTINATION usr/lib)
-install(TARGETS exynostools RUNTIME DEST
+install(TARGETS exynostools RUNTIME DESTINATION usr/bin)
+
+# Generated shaders (SPV + embedded C)
+if(EXISTS "${GENERATED_SHADER_DIR}")
+  install(DIRECTORY ${GENERATED_SHADER_DIR}/ DESTINATION usr/share/exynostools/shaders
+          FILES_MATCHING PATTERN "*.spv" PATTERN "*_spv.c" PATTERN "*_spv.h")
+endif()
+
+# Raw shader sources for debugging
+if(EXISTS "${SHADERS_SRC_DIR}")
+  install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/shaders/src/ DESTINATION usr/share/exynostools/shaders/src
+          FILES_MATCHING PATTERN "*.comp" PATTERN "*.glsl" PATTERN "*.frag" PATTERN "*.vert")
+endif()
+
+# Headers
+if(EXISTS "${INCLUDE_DIR}")
+  install(DIRECTORY ${INCLUDE_DIR}/ DESTINATION usr/include FILES_MATCHING PATTERN "*.h")
+endif()
+
+message(STATUS "Configured. BUILD_SHADERS=${BUILD_SHADERS} BUILD_SELFTEST=${BUILD_SELFTEST} SHADER_TARGET_ENV=${SHADER_TARGET_ENV}")
