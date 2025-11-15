@@ -16,14 +16,12 @@ set(PROJ_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 set(SRC_DIR "${PROJ_ROOT}/src")
 set(INCLUDE_DIR "${PROJ_ROOT}/include")
 set(SHADER_BUILD_DIR "${CMAKE_BINARY_DIR}/shaders")
-set(GENERATED_HEADER_DIR "${CMAKE_BINARY_DIR}/generated_includes")
 set(GENERATED_EMBED_SRC "${CMAKE_BINARY_DIR}/shaders_embed.c")
 set(GENERATOR_SCRIPT "${CMAKE_BINARY_DIR}/generate_shaders_embed.sh")
 
-include_directories("${GENERATED_HEADER_DIR}")
 include_directories("${INCLUDE_DIR}")
 include_directories("${SRC_DIR}")
-include_directories("${CMAKE_BINARY_DIR}") # allow includes from generated files
+include_directories("${CMAKE_BINARY_DIR}")  # allow includes from generated files
 
 # ----------------------------------------------------------------------------
 # Discover shader sources and compile to SPIR-V
@@ -44,7 +42,6 @@ foreach(relpath IN LISTS SHADER_SOURCES_RAW_REL)
   get_filename_component(DIR_PART "${relpath}" DIRECTORY)
   get_filename_component(NAME_WE "${relpath}" NAME_WE)
 
-  # SPV output path (mirror directory structure under build/shaders)
   set(SPV_OUT "${SHADER_BUILD_DIR}/${DIR_PART}/${NAME_WE}.spv")
   list(APPEND SPIRV_OUTPUTS "${SPV_OUT}")
   list(APPEND SPIRV_NAMES "${NAME_WE}")
@@ -64,8 +61,7 @@ if(SPIRV_OUTPUTS)
 endif()
 
 # ----------------------------------------------------------------------------
-# Write a small generator script that will produce a single C file embedding all SPIR-V arrays
-# This avoids complex quoting in add_custom_command and keeps CMake parsing safe.
+# Create a simple generator script (safe: no nested quoting inside add_custom_command)
 # ----------------------------------------------------------------------------
 file(WRITE "${GENERATOR_SCRIPT}" "#!/usr/bin/env bash\n")
 file(APPEND "${GENERATOR_SCRIPT}" "set -euo pipefail\n")
@@ -73,9 +69,9 @@ file(APPEND "${GENERATOR_SCRIPT}" "OUT_FILE=\"${GENERATED_EMBED_SRC}\"\n")
 file(APPEND "${GENERATOR_SCRIPT}" "echo '/* Auto-generated: embedded SPIR-V arrays */' > \"${GENERATED_EMBED_SRC}\"\n")
 file(APPEND "${GENERATOR_SCRIPT}" "echo '#include <stddef.h>' >> \"${GENERATED_EMBED_SRC}\"\n")
 file(APPEND "${GENERATOR_SCRIPT}" "echo '#include <stdint.h>' >> \"${GENERATED_EMBED_SRC}\"\n")
-# Loop over SPIRV_OUTPUTS at generation time by expanding a CMake-provided literal list into the script
+
+# Append safe per-SPV handling lines to the generator script
 foreach(spv IN LISTS SPIRV_OUTPUTS)
-  # escape any $ for safe append
   file(APPEND "${GENERATOR_SCRIPT}"
     "if [ -f \"${spv}\" ]; then\n"
     "  NAME=\"$(basename \"${spv}\" .spv)\"\n"
@@ -92,11 +88,11 @@ foreach(spv IN LISTS SPIRV_OUTPUTS)
     "fi\n"
   )
 endforeach()
-# Make generator script executable
+
 file(APPEND "${GENERATOR_SCRIPT}" "chmod +x \"${GENERATOR_SCRIPT}\" || true\n")
 
 # ----------------------------------------------------------------------------
-# Use the generator script in an add_custom_command to create GENERATED_EMBED_SRC
+# Use the generator script to produce GENERATED_EMBED_SRC after SPIR-Vs exist
 # ----------------------------------------------------------------------------
 add_custom_command(
   OUTPUT "${GENERATED_EMBED_SRC}"
@@ -113,7 +109,7 @@ add_dependencies(shaders_embed_obj gen_shaders_embed)
 target_include_directories(shaders_embed_obj PRIVATE "${CMAKE_BINARY_DIR}")
 
 # ----------------------------------------------------------------------------
-# Discover C sources (exclude shader files and selfcheck.c from main target)
+# Discover C sources (exclude shaders and selfcheck.c from main target)
 # ----------------------------------------------------------------------------
 file(GLOB_RECURSE ALL_C_SOURCES_RAW_REL
     RELATIVE "${PROJ_ROOT}"
@@ -136,7 +132,7 @@ if(NOT ALL_C_SOURCES)
 endif()
 
 # ----------------------------------------------------------------------------
-# logging.c as OBJECT to allow controlling symbol presence and avoid duplicates
+# logging.c as OBJECT if present
 # ----------------------------------------------------------------------------
 set(LOGGING_REL_PATH "src/logging.c")
 set(LOGGING_ABS_PATH "${PROJ_ROOT}/${LOGGING_REL_PATH}")
@@ -204,7 +200,7 @@ target_include_directories(exynostools_selfcheck
 )
 
 # ----------------------------------------------------------------------------
-# Vulkan and Threads
+# Vulkan and Threads linking
 # ----------------------------------------------------------------------------
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
