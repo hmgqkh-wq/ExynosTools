@@ -1,16 +1,15 @@
 cmake_minimum_required(VERSION 3.15)
 project(exynostools C)
 
-# -------------------- User configurable options --------------------
+# -------------------- User options --------------------
 option(BUILD_SHADERS "Compile GLSL shaders to SPIR-V and embed them into C sources" ON)
 option(ENABLE_LTO "Enable link-time optimization where supported" ON)
-option(BUILD_SHARED_LIBS "Build shared libs where appropriate" OFF)
 set(SHADER_TARGET_ENV "vulkan1.3" CACHE STRING "SPIR-V target environment (vulkan1.0, vulkan1.1, vulkan1.2, vulkan1.3)")
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# -------------------- Paths and layout ------------------------------
+# -------------------- Paths --------------------
 set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
 set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
 set(SHADERS_SRC_DIR "${CMAKE_SOURCE_DIR}/assets/shaders/src")
@@ -19,53 +18,69 @@ file(MAKE_DIRECTORY "${GENERATED_SHADER_DIR}")
 
 include_directories("${INCLUDE_DIR}" "${GENERATED_SHADER_DIR}")
 
-# -------------------- Tool detection --------------------------------
+# -------------------- Tools --------------------
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_program(GLSLC_EXEC glslc)
 find_program(XXD_EXEC xxd)
-find_program(SHADER_NORMALIZER_SCRIPT normalize_and_validate_shaders.sh HINTS "${CMAKE_SOURCE_DIR}")
+find_program(BASH_EXEC bash) # used to run repo scripts even if not executable
 
-# If we need to build shaders ensure we have xxd and at least one compiler
 if(BUILD_SHADERS)
   if(NOT XXD_EXEC)
-    message(FATAL_ERROR "xxd not found (used to embed SPIR-V into C arrays). Install xxd (vim-common) or set BUILD_SHADERS=OFF and provide prebuilt .spv files.")
+    message(FATAL_ERROR "xxd not found (used to embed SPIR-V). Install xxd (vim-common) or set BUILD_SHADERS=OFF and provide prebuilt .spv files.")
   endif()
   if(NOT GLSLANG_VALIDATOR AND NOT GLSLC_EXEC)
-    message(FATAL_ERROR "No shader compiler found. Install glslangValidator or glslc (shaderc). Alternatively set -DBUILD_SHADERS=OFF and provide prebuilt .spv files.")
+    message(FATAL_ERROR "No shader compiler found (glslangValidator or glslc). Install one or set BUILD_SHADERS=OFF.")
   endif()
 endif()
 
-# -------------------- Optional normalization/preprocessing ----------
-# Run normalize_and_validate_shaders.sh if present (the repo contains this script).
-add_custom_target(repo_normalize_shaders
-  COMMENT "No-op normalize step (script missing)"
-)
+# -------------------- Repo normalizer (if present) --------------------
+# Use unique target names to avoid collision with any existing repository targets.
+set(REPO_NORMALIZER_SCRIPT "${CMAKE_SOURCE_DIR}/normalize_and_validate_shaders.sh")
+if(BUILD_SHADERS AND EXISTS "${REPO_NORMALIZER_SCRIPT}")
+  # Use bash explicitly so script need not be executable in the repo.
+  if(NOT BASH_EXEC)
+    message(FATAL_ERROR "bash not found on system; required to run ${REPO_NORMALIZER_SCRIPT}")
+  endif()
 
-if(BUILD_SHADERS AND EXISTS "${CMAKE_SOURCE_DIR}/normalize_and_validate_shaders.sh")
-  add_custom_target(repo_normalize_shaders
-    COMMAND ${CMAKE_COMMAND} -E echo "Running repo shader normalizer..."
-    COMMAND "${CMAKE_SOURCE_DIR}/normalize_and_validate_shaders.sh" "${SHADERS_SRC_DIR}"
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "normalize_and_validate_shaders.sh ${SHADERS_SRC_DIR}"
-    VERBATIM
-  )
+  # Only create our custom target if it does not already exist in the project.
+  if(NOT TARGET exy_repo_normalize_shaders)
+    add_custom_target(exy_repo_normalize_shaders
+      COMMAND ${CMAKE_COMMAND} -E echo "Running repository shader normalizer..."
+      COMMAND ${BASH_EXEC} "${REPO_NORMALIZER_SCRIPT}" "${SHADERS_SRC_DIR}"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      COMMENT "normalize_and_validate_shaders.sh ${SHADERS_SRC_DIR}"
+      VERBATIM
+    )
+  else()
+    message(STATUS "Target exy_repo_normalize_shaders already exists; skipping creation.")
+  endif()
+else()
+  add_custom_target(exy_repo_normalize_shaders)
 endif()
 
-# Also run our prep_shaders.sh (see scripts/prep_shaders.sh), which ensures #version and a small header
+# -------------------- Local shader preprocessing (optional) ------------
 set(PREP_SCRIPT "${CMAKE_SOURCE_DIR}/scripts/prep_shaders.sh")
 if(BUILD_SHADERS AND EXISTS "${PREP_SCRIPT}")
-  add_custom_target(repo_prep_shaders
-    COMMAND ${CMAKE_COMMAND} -E echo "Running local shader preprocessor..."
-    COMMAND "${PREP_SCRIPT}" "${SHADERS_SRC_DIR}" "${GENERATED_SHADER_DIR}"
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "prep_shaders.sh ${SHADERS_SRC_DIR}"
-    VERBATIM
-  )
+  if(NOT BASH_EXEC)
+    message(FATAL_ERROR "bash not found on system; required to run ${PREP_SCRIPT}")
+  endif()
+
+  if(NOT TARGET exy_repo_prep_shaders)
+    add_custom_target(exy_repo_prep_shaders
+      COMMAND ${CMAKE_COMMAND} -E echo "Running local shader preprocessor..."
+      COMMAND ${BASH_EXEC} "${PREP_SCRIPT}" "${SHADERS_SRC_DIR}" "${GENERATED_SHADER_DIR}"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      COMMENT "prep_shaders.sh ${SHADERS_SRC_DIR}"
+      VERBATIM
+    )
+  else()
+    message(STATUS "Target exy_repo_prep_shaders already exists; skipping creation.")
+  endif()
 else()
-  add_custom_target(repo_prep_shaders)
+  add_custom_target(exy_repo_prep_shaders)
 endif()
 
-# -------------------- Generate SPIR-V and embed in C ----------------
+# -------------------- Generate SPIR-V and embed into C -------------------
 set(GENERATED_SHADER_C_FILES)
 if(EXISTS "${SHADERS_SRC_DIR}")
   file(GLOB_RECURSE _ALL_SHADER_FILES
@@ -91,7 +106,6 @@ if(EXISTS "${SHADERS_SRC_DIR}")
           COMMENT "Copy prebuilt SPIR-V ${_shader}"
           VERBATIM)
       else()
-        # pick stage from extension
         if(_ext_l STREQUAL ".comp")
           set(_stage "comp")
         elseif(_ext_l STREQUAL ".frag")
@@ -99,10 +113,9 @@ if(EXISTS "${SHADERS_SRC_DIR}")
         elseif(_ext_l STREQUAL ".vert")
           set(_stage "vert")
         else()
-          set(_stage "comp") # safe default for BC decoders (most are compute)
+          set(_stage "comp")
         endif()
 
-        # prefer glslangValidator with target env, fallback to glslc
         if(GLSLANG_VALIDATOR)
           add_custom_command(OUTPUT "${_out_spv}"
             COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader (glslangValidator) ${_shader}"
@@ -130,7 +143,6 @@ if(EXISTS "${SHADERS_SRC_DIR}")
         VERBATIM)
     endif()
 
-    # embed spv into C via xxd -i (makes <name>_spv and <name>_spv_len)
     add_custom_command(OUTPUT "${_out_c}"
       COMMAND ${CMAKE_COMMAND} -E echo "/* Auto-generated shader embed for ${_base} */" > "${_out_c}"
       COMMAND ${XXD_EXEC} -i "${_out_spv}" >> "${_out_c}"
@@ -142,26 +154,24 @@ if(EXISTS "${SHADERS_SRC_DIR}")
   endforeach()
 endif()
 
-# ensure generated files are built after normalization & prep
 if(GENERATED_SHADER_C_FILES)
-  add_custom_target(generate_shaders DEPENDS ${GENERATED_SHADER_C_FILES})
-  add_dependencies(generate_shaders repo_normalize_shaders)
-  add_dependencies(generate_shaders repo_prep_shaders)
+  add_custom_target(exy_generate_shaders DEPENDS ${GENERATED_SHADER_C_FILES})
+  add_dependencies(exy_generate_shaders exy_repo_normalize_shaders)
+  add_dependencies(exy_generate_shaders exy_repo_prep_shaders)
 else()
-  add_custom_target(generate_shaders)
+  add_custom_target(exy_generate_shaders)
 endif()
 
-# -------------------- Gather project source files --------------------
+# -------------------- Gather project sources (no changes to driver) ----
 file(GLOB_RECURSE PROJECT_SRCS "${SRC_DIR}/*.c")
 list(APPEND PROJECT_SRCS ${GENERATED_SHADER_C_FILES})
 
-# -------------------- Create main target (keep behavior) ------------
 add_executable(exynostools ${PROJECT_SRCS})
-add_dependencies(exynostools generate_shaders)
+add_dependencies(exynostools exy_generate_shaders)
 
 target_include_directories(exynostools PRIVATE "${INCLUDE_DIR}" "${GENERATED_SHADER_DIR}")
 
-# -------------------- Safe build optimizations ----------------------
+# -------------------- Optimizations (safe defaults) --------------------
 if(ENABLE_LTO AND NOT DEFINED ANDROID_NDK_HOME)
   include(CheckIPOSupported)
   check_ipo_supported(RESULT ipo_supported OUTPUT ipo_out)
@@ -178,7 +188,7 @@ if(NOT MSVC)
   target_compile_options(exynostools PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# -------------------- Find Vulkan and link system libs --------------
+# -------------------- Find Vulkan and system libs -----------------------
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
   target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
