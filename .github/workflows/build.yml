@@ -31,11 +31,8 @@ jobs:
         mkdir -p xafan/exynostools-android-arm64/usr/bin
         mkdir -p xafan/exynostools-android-arm64/assets/shaders/decode
 
-        # Copy executables
         cp build-android/exynostools xafan/exynostools-android-arm64/usr/bin/
         cp build-android/exynostools_selfcheck xafan/exynostools-android-arm64/usr/bin/
-
-        # Copy compiled shaders
         find build-android/shaders -type f -name "*.spv" -exec cp {} xafan/exynostools-android-arm64/assets/shaders/decode/ \;
 
     - name: Create compressed artifact
@@ -44,7 +41,7 @@ jobs:
         zstd exynostools-android-arm64.tar
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: exynostools-android-arm64
         path: exynostools-android-arm64.tar.zst
