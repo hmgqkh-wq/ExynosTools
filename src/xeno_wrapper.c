@@ -1,17 +1,13 @@
 // src/xeno_wrapper.c
-// Full drop-in implementation matching include/xeno_wrapper.h prototypes.
-
 #include <vulkan/vulkan.h>
 #include "xeno_wrapper.h"
 #include "xeno_log.h"
 #include "xeno_bc.h"
 
-/* If real loader-originals exist, declare them here. If not, leave them NULL.
-   Replace or initialize these externs in your loader/initialization code if needed. */
+/* If your loader supplies originals, declare them extern here. They may be NULL. */
 extern PFN_vkCreateDevice vkCreateDevice_original;
 extern PFN_vkCmdBeginRenderPass vkCmdBeginRenderPass_original;
 
-/* Create device wrapper: calls original, then attempts to create BC context. */
 VkResult xeno_wrapper_create_device(VkPhysicalDevice physicalDevice,
                                     const VkDeviceCreateInfo *pCreateInfo,
                                     const VkAllocationCallbacks *pAllocator,
@@ -46,7 +42,6 @@ VkResult xeno_wrapper_create_device(VkPhysicalDevice physicalDevice,
     return VK_SUCCESS;
 }
 
-/* Begin render wrapper forwards to original begin render if present. */
 void xeno_wrapper_begin_render(VkCommandBuffer commandBuffer,
                                const VkRenderPassBeginInfo *pRenderPassBeginInfo,
                                VkSubpassContents contents)
@@ -58,7 +53,6 @@ void xeno_wrapper_begin_render(VkCommandBuffer commandBuffer,
     }
 }
 
-/* Destroy wrapper: destroy BC context if provided. */
 void xeno_wrapper_destroy(struct XenoBCContext *maybe_ctx)
 {
     if (maybe_ctx) {
