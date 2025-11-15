@@ -1,5 +1,5 @@
 #version 450
-// BC5 dual-channel (two BC4 streams) simplified implementation
+// BC5 dual-channel (two BC4 streams), 32-bit loads only
 layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
 layout(std430, binding = 0) readonly buffer Src { uint data[]; } srcBuf;
@@ -7,9 +7,17 @@ layout(binding = 1, rg8) writeonly uniform image2D dstImg;
 
 layout(push_constant) uniform Push { uint srcOffset; uint srcSize; uint width; uint height; } pc;
 
-float decode_channel(uint64_t block, uint idx) {
-    uint index = (block >> (idx * 3u)) & 0x7u;
-    return float(index) / 7.0;
+uint readByte(uint byteOffset) {
+    uint wordIndex = byteOffset >> 2;
+    uint shift     = (byteOffset & 3u) * 8u;
+    uint word      = srcBuf.data[wordIndex];
+    return (word >> shift) & 0xFFu;
+}
+
+uint extractApproxIndex(uint base, uint pixel_index) {
+    // Same coarse 4-bit mapping as bc4.comp for robustness without 64-bit ops
+    uint idxByte = readByte(base + 2u + (pixel_index >> 1));
+    return ((pixel_index & 1u) == 0u) ? (idxByte & 0x0Fu) : ((idxByte >> 4u) & 0x0Fu);
 }
 
 void main() {
@@ -17,29 +25,22 @@ void main() {
     uint gy = gl_GlobalInvocationID.y;
     if (gx >= pc.width || gy >= pc.height) return;
 
-    uint block_x = gx / 4u;
-    uint block_y = gy / 4u;
-    uint blocks_per_row = (pc.width + 3u) / 4u;
-    uint block_index = block_y * blocks_per_row + block_x;
-
-    // BC5 stores two BC4 blocks sequentially (16 bytes)
-    uint byte_offset = pc.srcOffset + block_index * 16u;
-    uint word_index = byte_offset / 4u;
-
-    uint w0 = srcBuf.data[word_index];
-    uint w1 = srcBuf.data[word_index + 1u];
-    uint w2 = srcBuf.data[word_index + 2u];
-    uint w3 = srcBuf.data[word_index + 3u];
-
-    uint64_t ch0 = (uint64_t(w1) << 32) | uint64_t(w0);
-    uint64_t ch1 = (uint64_t(w3) << 32) | uint64_t(w2);
+    uint block_x = gx >> 2;
+    uint block_y = gy >> 2;
+    uint blocks_per_row = (pc.width + 3u) >> 2;
+    uint block_index    = block_y * blocks_per_row + block_x;
+    uint base           = pc.srcOffset + block_index * 16u;
 
     uint px = gx & 3u;
     uint py = gy & 3u;
     uint pixel_index = py * 4u + px;
 
-    float v0 = decode_channel(ch0, pixel_index);
-    float v1 = decode_channel(ch1, pixel_index);
+    // Channel 0 at base + 0, channel 1 at base + 8
+    uint idx0 = extractApproxIndex(base + 0u, pixel_index);
+    uint idx1 = extractApproxIndex(base + 8u, pixel_index);
 
-    imageStore(dstImg, ivec2(gx, gy), vec4(v0, v1, 0.0, 1.0));
+    uint r8 = (idx0 * 255u) / 15u;
+    uint g8 = (idx1 * 255u) / 15u;
+
+    imageStore(dstImg, ivec2(gx, gy), vec4(float(r8) / 255.0, float(g8) / 255.0, 0.0, 1.0));
 }
