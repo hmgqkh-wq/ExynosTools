@@ -1,10 +1,7 @@
 // src/misc/minimal_wrapper.c
-// Full drop-in replacement — includes xeno_log.h and avoids unused-function warnings.
-
 #include <vulkan/vulkan.h>
 #include "xeno_log.h"
 
-/* Mark helpers unused to silence warnings when not referenced. */
 #if defined(__GNUC__)
 static PFN_vkVoidFunction my_vkGetInstanceProcAddr(VkInstance instance, const char* pname) __attribute__((unused));
 static PFN_vkVoidFunction my_vkGetDeviceProcAddr(VkDevice device, const char* pname) __attribute__((unused));
