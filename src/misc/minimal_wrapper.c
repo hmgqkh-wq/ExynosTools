@@ -1,15 +1,10 @@
 // src/misc/minimal_wrapper.c
-// Full drop-in replacement for minimal loader wrapper utilities.
-// - Marks local helper functions as static and unused to silence warnings
-// - Includes required headers
-// - Uses project logging macros
+// Full drop-in replacement — includes xeno_log.h and avoids unused-function warnings.
 
 #include <vulkan/vulkan.h>
 #include "xeno_log.h"
 
-/* Local helpers kept static and explicitly marked unused where appropriate
-   to avoid compiler warnings in builds that don't use them. */
-
+/* Mark helpers unused to silence warnings when not referenced. */
 #if defined(__GNUC__)
 static PFN_vkVoidFunction my_vkGetInstanceProcAddr(VkInstance instance, const char* pname) __attribute__((unused));
 static PFN_vkVoidFunction my_vkGetDeviceProcAddr(VkDevice device, const char* pname) __attribute__((unused));
@@ -33,8 +28,6 @@ static PFN_vkVoidFunction my_vkGetDeviceProcAddr(VkDevice device, const char* pn
     return NULL;
 }
 
-/* Simple exported helper used by the project to resolve one device symbol safely.
-   Returns NULL if resolution fails. */
 PFN_vkVoidFunction minimal_resolve_device_symbol(VkDevice device, const char *name)
 {
     if (!name) return NULL;
