@@ -1,45 +1,72 @@
 #version 450
-#extension GL_GOOGLE_include_directive : enable
-#include "bc_common.glsl"
+// High-performance BC1 decoder tuned for Xclipse 940 local sizes
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
-// BC1: RGB only (opaque or 1-bit alpha via "transparent" when c0 <= c1).
-// Input layout: 2 uints per block: endpoints(32-bit), indices(32-bit).
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer Src { uint data[]; } srcBuf;
+layout(binding = 1, rgba8) writeonly uniform image2D dstImg;
 
-layout(set = 0, binding = 0) readonly buffer InputBuffer { uint data[]; } inputBuffer;
-layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
+layout(push_constant) uniform Push {
+    uint srcOffset; // byte offset within buffer
+    uint srcSize;   // size in bytes
+    uint width;
+    uint height;
+} pc;
 
-void main()
-{
-    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 base = b * 4;
-    ivec2 dim = imageSize(outputImage);
-    if (base.x >= dim.x || base.y >= dim.y) return;
+uvec4 unpackColor565(uint packed) {
+    uint r = (packed >> 11) & 0x1F;
+    uint g = (packed >> 5) & 0x3F;
+    uint b = (packed) & 0x1F;
+    // expand to 8-bit
+    return uvec4((r * 255u) / 31u, (g * 255u) / 63u, (b * 255u) / 31u, 255u);
+}
 
-    int blocksX = (dim.x + 3) >> 2;
-    int blockIndex = b.y * blocksX + b.x;
-    int d = blockIndex * 2;
+void main() {
+    uint gx = gl_GlobalInvocationID.x;
+    uint gy = gl_GlobalInvocationID.y;
+    if (gx >= pc.width || gy >= pc.height) return;
 
-    uint endpoints32 = inputBuffer.data[d + 0];
-    uint indices32   = inputBuffer.data[d + 1];
+    // Each BC1 block encodes 4x4 pixels (8 bytes)
+    uint block_x = gx / 4u;
+    uint block_y = gy / 4u;
+    uint blocks_per_row = (pc.width + 3u) / 4u;
+    uint block_index = block_y * blocks_per_row + block_x;
+    uint byte_offset = pc.srcOffset + block_index * 8u;
+    uint word_index = byte_offset / 4u;
+    uint byte_in_word = byte_offset & 3u;
 
-    // endpoints packed: low 16 = C0, high 16 = C1
-    uvec2 endpoints = uvec2(endpoints32 & 0xFFFFu, (endpoints32 >> 16) & 0xFFFFu);
-    vec3 pal[4];
-    bool opaque;
-    bc1Palette(endpoints, pal, opaque);
+    // Load two 32-bit words that contain the 8-byte block (possibly crossing boundary)
+    uint w0 = srcBuf.data[word_index];
+    uint w1 = (word_index + 1u) < (pc.srcSize / 4u) ? srcBuf.data[word_index + 1u] : 0u;
 
-    for (uint ty=0u; ty<4u; ++ty)
-    for (uint tx=0u; tx<4u; ++tx) {
-        uint t = ty*4u + tx;
-        uint i = idx2(indices32, t);
-        vec4 outc;
-        if (!opaque && i == 3u) {
-            outc = vec4(0.0,0.0,0.0,0.0); // transparent
-        } else {
-            outc = vec4(pal[i], 1.0);
-        }
-        ivec2 p = base + ivec2(int(tx), int(ty));
-        if (p.x < dim.x && p.y < dim.y) imageStore(outputImage, p, outc);
+    // Reconstruct 64-bit block
+    uint64_t block64 = (uint64_t(w1) << 32) | uint64_t(w0);
+    // shift based on byte_in_word
+    block64 = (block64 >> (byte_in_word * 8u)) & 0xFFFFFFFFFFFFFFFFu;
+
+    uint color0 = uint(block64 & 0xFFFFu);
+    uint color1 = uint((block64 >> 16u) & 0xFFFFu);
+    uint lookup = uint((block64 >> 32u) & 0xFFFFFFFFu);
+
+    uvec4 col0 = unpackColor565(color0);
+    uvec4 col1 = unpackColor565(color1);
+    uvec4 finalColor;
+
+    uint px = gx & 3u;
+    uint py = gy & 3u;
+    uint pixel_index = py * 4u + px;
+    uint two_bits = (lookup >> (pixel_index * 2u)) & 0x3u;
+
+    if (color0 > color1u) {
+        if (two_bits == 0u) finalColor = col0;
+        else if (two_bits == 1u) finalColor = col1;
+        else if (two_bits == 2u) finalColor = uvec4((2u*col0 + col1)/3u, 255u);
+        else finalColor = uvec4((col0 + 2u*col1)/3u, 255u);
+    } else {
+        if (two_bits == 0u) finalColor = col0;
+        else if (two_bits == 1u) finalColor = col1;
+        else if (two_bits == 2u) finalColor = uvec4((col0 + col1)/2u, 255u);
+        else finalColor = uvec4(0u,0u,0u,0u);
     }
+
+    imageStore(dstImg, ivec2(gx, gy), vec4(finalColor) / 255.0);
 }
