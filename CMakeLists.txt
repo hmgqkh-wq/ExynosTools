@@ -36,7 +36,6 @@ if(BUILD_SHADERS)
 endif()
 
 # ---------------------- Generate and compile shaders (pure CMake) ----------
-# Copy, sanitize, compile entrypoint shaders, embed SPIR-V into C arrays.
 set(GENERATED_SHADER_C_FILES)
 set(GENERATED_SHADER_SPV_FILES)
 
@@ -173,21 +172,30 @@ if(NOT BUILD_SELFTEST AND EXISTS "${_selfcheck_path}")
 endif()
 
 # ---------------------- Xclipse driver shared lib -------------------------
-# Build a shared library from src/drivers/xclipse/*.c for .so output
 set(XCLIPSE_SRCS "")
 if(EXISTS "${DRIVERS_XCLIPSE_DIR}")
   file(GLOB_RECURSE XCLIPSE_SRCS "${DRIVERS_XCLIPSE_DIR}/*.c" "${DRIVERS_XCLIPSE_DIR}/*.h")
+  # Filter out any accidentally included generated or top-level shared files that may conflict.
+  # Exclude the common embed stub (if present) and any file names known to create duplicate symbols.
+  list(FILTER XCLIPSE_SRCS EXCLUDE REGEX ".*shaders_embed_stub.*")
+  list(FILTER XCLIPSE_SRCS EXCLUDE REGEX ".*shaders_embed.*")
+  list(FILTER XCLIPSE_SRCS EXCLUDE REGEX ".*xeno_log_stream.*")
+  list(FILTER XCLIPSE_SRCS EXCLUDE REGEX ".*xeno_wrapper_stubs.*")
 endif()
 
 if(XCLIPSE_SRCS)
   add_library(xclipse_driver SHARED ${XCLIPSE_SRCS})
   target_include_directories(xclipse_driver PRIVATE "${INCLUDE_DIR}" "${DRIVERS_XCLIPSE_DIR}")
-  # Position independent code already enabled project-wise
   set_target_properties(xclipse_driver PROPERTIES OUTPUT_NAME "xclipse")
   if(NOT MSVC)
     target_compile_options(xclipse_driver PRIVATE -fPIC -fvisibility=hidden)
+    # hide all symbols by default; exported API should be marked explicitly in driver headers if needed
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.13")
+      set_target_properties(xclipse_driver PROPERTIES C_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+    endif()
   endif()
-  # Link Vulkan if present (driver may require)
+
+  # Link Vulkan for driver if available
   find_package(Vulkan QUIET)
   if(Vulkan_FOUND)
     target_include_directories(xclipse_driver PRIVATE ${Vulkan_INCLUDE_DIRS})
@@ -208,10 +216,14 @@ add_executable(exynostools ${PROJECT_SRCS})
 add_dependencies(exynostools exy_generate_shaders)
 target_include_directories(exynostools PRIVATE "${INCLUDE_DIR}" "${GENERATED_SHADER_DIR}")
 
-# Link with xclipse_driver if it exists (so binary and driver share symbols if needed)
-if(TARGET xclipse_driver)
-  target_link_libraries(exynostools PRIVATE xclipse_driver)
-endif()
+# IMPORTANT: do NOT link the shared driver into the executable to avoid duplicates.
+# The driver is a plugin (.so) installed separately. If you need to load it at runtime,
+# use dlopen() on the installed .so instead of linking against it.
+# (This avoids multiple-definition errors when both the exe and plugin contain same symbols.)
+#
+# if(TARGET xclipse_driver)
+#   target_link_libraries(exynostools PRIVATE xclipse_driver) <-- intentionally removed
+# endif()
 
 # ---------------------- Compiler / linker flags -------------------------
 if(ENABLE_LTO AND NOT DEFINED ANDROID_NDK_HOME)
@@ -253,40 +265,27 @@ if(UNIX)
 endif()
 
 # ---------------------- Install manifest (complete) ---------------------
-# Main binary
-install(TARGETS exynostools
-        RUNTIME DESTINATION usr/bin)
+install(TARGETS exynostools RUNTIME DESTINATION usr/bin)
 
-# Xclipse driver .so
 if(TARGET xclipse_driver)
-  install(TARGETS xclipse_driver
-          LIBRARY DESTINATION usr/lib)
-  # also install driver runtime tree (sources and assets) for winlator-style layout
-  install(DIRECTORY ${DRIVERS_XCLIPSE_DIR}/
-          DESTINATION usr/share/exynostools/drivers/xclipse
-          FILES_MATCHING PATTERN "*.*")
+  install(TARGETS xclipse_driver LIBRARY DESTINATION usr/lib)
+  install(DIRECTORY ${DRIVERS_XCLIPSE_DIR}/ DESTINATION usr/share/exynostools/drivers/xclipse FILES_MATCHING PATTERN "*.*")
 endif()
 
-# Headers
 if(EXISTS "${INCLUDE_DIR}")
   install(DIRECTORY ${INCLUDE_DIR}/ DESTINATION usr/include FILES_MATCHING PATTERN "*.h")
 endif()
 
-# Install generated SPIR-V and generated C arrays
 if(EXISTS "${GENERATED_SHADER_DIR}")
   install(DIRECTORY ${GENERATED_SHADER_DIR}/ DESTINATION usr/share/exynostools/shaders FILES_MATCHING PATTERN "*.spv" PATTERN "*_spv.c" PATTERN "*_spv.h")
 endif()
 
-# Install original shader sources
 if(EXISTS "${SHADERS_SRC_DIR}")
   install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/shaders/ DESTINATION assets/shaders FILES_MATCHING PATTERN "*.comp" PATTERN "*.glsl" PATTERN "*.frag" PATTERN "*.vert")
 endif()
 
-# Install full src tree (useful for runtime wrappers, configs, layouts)
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/ DESTINATION usr/share/exynostools/src
-        FILES_MATCHING PATTERN "*.c" PATTERN "*.h" PATTERN "*.inl" PATTERN "*.conf" PATTERN "*.json" PATTERN "*.xml" PATTERN "*.sh")
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/ DESTINATION usr/share/exynostools/src FILES_MATCHING PATTERN "*.c" PATTERN "*.h" PATTERN "*.inl" PATTERN "*.conf" PATTERN "*.json" PATTERN "*.xml" PATTERN "*.sh")
 
-# Install profiles/layouts
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/create_common_layouts_and_pipelines")
   install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/create_common_layouts_and_pipelines/ DESTINATION usr/share/exynostools/layouts)
 endif()
@@ -294,7 +293,6 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/app_profile")
   install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/app_profile/ DESTINATION usr/share/exynostools/profiles)
 endif()
 
-# Install assets
 if(EXISTS "${CMAKE_SOURCE_DIR}/assets")
   install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/ DESTINATION assets)
 endif()
