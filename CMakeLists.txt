@@ -24,9 +24,7 @@ include_directories("${SRC_DIR}")
 include_directories("${GENERATED_HEADER_DIR}")
 include_directories("${CMAKE_BINARY_DIR}")
 
-# ----------------------------------------------------------------------------
 # Find tools
-# ----------------------------------------------------------------------------
 find_program(XXD_BIN xxd)
 find_program(HEXDUMP_BIN hexdump)
 find_program(GLSLANG_BIN glslangValidator)
@@ -35,9 +33,7 @@ if(NOT GLSLANG_BIN)
   message(FATAL_ERROR "glslangValidator not found; install glslang-tools or provide path")
 endif()
 
-# ----------------------------------------------------------------------------
 # Discover shader sources and compile to SPIR-V
-# ----------------------------------------------------------------------------
 file(GLOB_RECURSE SHADER_SOURCES_RAW_REL
   RELATIVE "${PROJ_ROOT}"
   "${SRC_DIR}/*.comp"
@@ -58,7 +54,6 @@ foreach(relpath IN LISTS SHADER_SOURCES_RAW_REL)
   set(SPV_OUT "${SHADER_BUILD_DIR}/${DIR_PART}/${NAME_WE}.spv")
   list(APPEND SPIRV_OUTPUTS "${SPV_OUT}")
 
-  # header filename is stable and flattened
   string(REPLACE "/" "_" HDR_BASENAME "${DIR_PART}_${NAME_WE}_shader_spv.h")
   set(HEADER_OUT "${GENERATED_HEADER_DIR}/${HDR_BASENAME}")
   list(APPEND SPIRV_HEADERS "${HEADER_OUT}")
@@ -73,28 +68,24 @@ foreach(relpath IN LISTS SHADER_SOURCES_RAW_REL)
     VERBATIM
   )
 
-  # Prepare SPV -> header conversion using xxd or hexdump fallback
   if(XXD_BIN)
-    # xxd -i produces a C array; we normalize the names with sed to a deterministic suffix
     add_custom_command(
       OUTPUT "${HEADER_OUT}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_HEADER_DIR}"
       COMMAND ${XXD_BIN} -i "${SPV_OUT}" > "${HEADER_OUT}.tmp"
-      COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --blue "Normalizing ${HEADER_OUT}.tmp -> ${HEADER_OUT}"
       COMMAND ${CMAKE_COMMAND} -E env sh -c "sed -E -e 's/^unsigned char /const uint8_t /' -e 's/unsigned int (.*)_spv_len/const size_t \\1_shader_spv_len/' -e 's/unsigned char (.*)_spv\\[\\]/const uint8_t \\1_shader_spv[]/' '${HEADER_OUT}.tmp' > '${HEADER_OUT}'"
       COMMAND ${CMAKE_COMMAND} -E remove "${HEADER_OUT}.tmp"
       DEPENDS "${SPV_OUT}"
-      COMMENT "Converting SPIR-V ${SPV_OUT} -> header ${HEADER_OUT} (xxd path)"
+      COMMENT "Converting SPIR-V ${SPV_OUT} -> header ${HEADER_OUT} (xxd)"
       VERBATIM
     )
   elseif(HEXDUMP_BIN)
-    # portable hexdump path: generate C header with uint32_t words to match broad usage
     add_custom_command(
       OUTPUT "${HEADER_OUT}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_HEADER_DIR}"
       COMMAND ${CMAKE_COMMAND} -E env sh -c "echo '#include <stddef.h>' > '${HEADER_OUT}'; echo '#include <stdint.h>' >> '${HEADER_OUT}'; echo 'const uint32_t ${NAME_WE}_shader_spv[] = {' >> '${HEADER_OUT}'; ${HEXDUMP_BIN} -v -e '4/4 \"0x%08x, \" \"\\n\"' '${SPV_OUT}' >> '${HEADER_OUT}'; echo '};' >> '${HEADER_OUT}'; echo 'const size_t ${NAME_WE}_shader_spv_len = (sizeof(${NAME_WE}_shader_spv)/sizeof(${NAME_WE}_shader_spv[0]));' >> '${HEADER_OUT}'"
       DEPENDS "${SPV_OUT}"
-      COMMENT "Converting SPIR-V ${SPV_OUT} -> header ${HEADER_OUT} (hexdump path)"
+      COMMENT "Converting SPIR-V ${SPV_OUT} -> header ${HEADER_OUT} (hexdump)"
       VERBATIM
     )
   else()
@@ -110,18 +101,12 @@ if(SPIRV_HEADERS)
   add_custom_target(spv_to_c_headers ALL DEPENDS ${SPIRV_HEADERS})
 endif()
 
-# ----------------------------------------------------------------------------
 # Generate a single shaders_embed.c that includes all generated headers
-# ----------------------------------------------------------------------------
-# Make sure headers target exists before generating the embed source
-set(GEN_EMBED_DONE "${GENERATED_EMBED_SRC}.done")
-
 add_custom_command(
   OUTPUT "${GENERATED_EMBED_SRC}"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_HEADER_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --blue "Generating ${GENERATED_EMBED_SRC} (includes all shader headers)"
+  COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --blue "Generating ${GENERATED_EMBED_SRC}"
   COMMAND ${CMAKE_COMMAND} -E echo "/* Auto-generated: include shader headers */" > "${GENERATED_EMBED_SRC}"
-  # Append include lines for each header
   COMMAND ${CMAKE_COMMAND} -E env sh -c "for h in ${SPIRV_HEADERS}; do echo \"#include \\\"$(basename \\\"\\$h\\\")\\\"\" >> \"${GENERATED_EMBED_SRC}\"; done"
   DEPENDS ${SPIRV_HEADERS}
   COMMENT "Generating single C file that includes shader headers"
@@ -129,15 +114,11 @@ add_custom_command(
 )
 
 add_custom_target(gen_shaders_embed ALL DEPENDS "${GENERATED_EMBED_SRC}")
-
-# Compile the embed source into an object library and ensure it depends on header generation
 add_library(shaders_embed_obj OBJECT "${GENERATED_EMBED_SRC}")
 add_dependencies(shaders_embed_obj gen_shaders_embed)
 target_include_directories(shaders_embed_obj PRIVATE "${GENERATED_HEADER_DIR}")
 
-# ----------------------------------------------------------------------------
 # Discover C sources (exclude shader files and selfcheck.c from main target)
-# ----------------------------------------------------------------------------
 file(GLOB_RECURSE ALL_C_SOURCES_RAW_REL
     RELATIVE "${PROJ_ROOT}"
     "${SRC_DIR}/*.c"
@@ -158,9 +139,7 @@ if(NOT ALL_C_SOURCES)
   message(FATAL_ERROR "No C source files found under ${SRC_DIR}")
 endif()
 
-# ----------------------------------------------------------------------------
 # logging.c as OBJECT (avoid duplicate symbols)
-# ----------------------------------------------------------------------------
 set(LOGGING_REL_PATH "src/logging.c")
 set(LOGGING_ABS_PATH "${PROJ_ROOT}/${LOGGING_REL_PATH}")
 set(HAVE_LOGGING_SRC OFF)
@@ -179,11 +158,8 @@ if(HAVE_LOGGING_SRC)
   target_compile_options(logging_obj PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 endif()
 
-# ----------------------------------------------------------------------------
-# Main executable
-# ----------------------------------------------------------------------------
+# Main executable (selfcheck removed)
 add_executable(exynostools ${MAIN_SOURCES})
-# ensure SPIR-Vs and headers are generated before link; embed object must be built too
 if(SPIRV_OUTPUTS)
   add_dependencies(exynostools compile_spirv)
 endif()
@@ -214,53 +190,23 @@ if(ENABLE_VERBOSE_BUILD)
     set(CMAKE_VERBOSE_MAKEFILE ON)
 endif()
 
-# ----------------------------------------------------------------------------
-# Self-check executable (isolated)
-# ----------------------------------------------------------------------------
-add_executable(exynostools_selfcheck "${SRC_DIR}/selfcheck.c")
-if(SPIRV_OUTPUTS)
-  add_dependencies(exynostools_selfcheck compile_spirv)
-endif()
-if(SPIRV_HEADERS)
-  add_dependencies(exynostools_selfcheck spv_to_c_headers)
-endif()
-add_dependencies(exynostools_selfcheck gen_shaders_embed)
-target_sources(exynostools_selfcheck PRIVATE $<TARGET_OBJECTS:shaders_embed_obj>)
-
-target_include_directories(exynostools_selfcheck
-    PRIVATE
-      "${INCLUDE_DIR}"
-      "${SRC_DIR}"
-      "${GENERATED_HEADER_DIR}"
-      "${CMAKE_BINARY_DIR}"
-)
-
-# ----------------------------------------------------------------------------
-# Vulkan and Threads
-# ----------------------------------------------------------------------------
+# Vulkan and Threads linking
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
   target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
   target_link_libraries(exynostools PRIVATE ${Vulkan_LIBRARIES})
-  target_include_directories(exynostools_selfcheck PRIVATE ${Vulkan_INCLUDE_DIRS})
-  target_link_libraries(exynostools_selfcheck PRIVATE ${Vulkan_LIBRARIES})
 endif()
 
 find_package(Threads QUIET)
 if(THREADS_FOUND)
   target_link_libraries(exynostools PRIVATE Threads::Threads)
-  target_link_libraries(exynostools_selfcheck PRIVATE Threads::Threads)
 endif()
 
 target_compile_definitions(exynostools PRIVATE $<$<CONFIG:Debug>:DEBUG=1>)
-target_compile_definitions(exynostools_selfcheck PRIVATE $<$<CONFIG:Debug>:DEBUG=1>)
 
 install(TARGETS exynostools RUNTIME DESTINATION bin)
-install(TARGETS exynostools_selfcheck RUNTIME DESTINATION bin)
 
-# ----------------------------------------------------------------------------
 # Debug helpers
-# ----------------------------------------------------------------------------
 string(REPLACE ";" " " ALL_C_SOURCES_JOINED "${ALL_C_SOURCES}")
 add_custom_target(show_sources
   COMMENT "Printing discovered C sources"
