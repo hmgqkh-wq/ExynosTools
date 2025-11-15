@@ -3,14 +3,10 @@
   High-performance, non-fallback BC decode pipeline implementation
   tuned for Samsung Xclipse 940.
 
-  Requirements:
-  - Generated SPIR-V headers must exist in build include path:
-      bc1_shader.h, bc2_shader.h, bc3_shader.h, bc4_shader.h, bc5_shader.h, bc6h_shader.h, bc7_shader.h
-    Each header must expose:
-      const uint32_t <name>_spv[] = {...};
-      const size_t   <name>_spv_len = sizeof(<name>_spv);
-  - Vulkan device with compute queue.
-  - No fallback code paths; if a pipeline/shader is missing it reports error.
+  This file is a corrected, single-file replacement that fixes previous
+  compilation errors (typo in VkDescriptorPoolCreateInfo, mismatched braces,
+  and accidental nested function definitions). It expects the same headers
+  as before: xeno_bc.h, logging.h, xeno_log.h and Vulkan headers.
 */
 
 #include <stdlib.h>
@@ -23,8 +19,8 @@
 #include <vulkan/vulkan.h>
 
 #include "xeno_bc.h"
-#include "logging.h"    /* logging_error / logging_info; provide in repo */
-#include "xeno_log.h"   /* xeno_log_stream() */
+#include "logging.h"
+#include "xeno_log.h"
 
 #define XCLIPSE_LOCAL_X 16u
 #define XCLIPSE_LOCAL_Y 8u
@@ -60,7 +56,6 @@ static VkResult create_shader_module(VkDevice dev, const uint32_t *words, size_t
 static VkResult create_compute_pipeline(VkDevice dev, VkPipelineLayout layout, VkShaderModule module, VkPipeline *outPipeline);
 static VkResult init_staging_pool(VkDevice device, VkPhysicalDevice physical, VkBuffer *outBuf, VkDeviceMemory *outMem, size_t pool_size);
 
-/* External: get local size */
 void xeno_bc_get_optimal_local_size(uint32_t *local_x, uint32_t *local_y)
 {
     if (local_x) *local_x = XCLIPSE_LOCAL_X;
@@ -106,7 +101,6 @@ VkResult xeno_bc_create_context(VkDevice device, VkPhysicalDevice physical, VkQu
     if (r != VK_SUCCESS) goto fail;
 
     /* Load generated SPV headers - these must be present. */
-    /* Headers must define: bcN_shader_spv and bcN_shader_spv_len */
     extern const uint32_t bc1_shader_spv[]; extern const size_t bc1_shader_spv_len;
     extern const uint32_t bc2_shader_spv[]; extern const size_t bc2_shader_spv_len;
     extern const uint32_t bc3_shader_spv[]; extern const size_t bc3_shader_spv_len;
@@ -283,55 +277,6 @@ VkResult xeno_bc_decode_image(VkCommandBuffer cmd, struct XenoBCContext *ctx, co
     vkFreeDescriptorSets(ctx->device, ctx->descriptorPool, 1, &descSet);
 
     return VK_SUCCESS;
-}
-
-/* Helpers */
-
-static VkResult create_descriptor_layouts(VkDevice dev, VkDescriptorSetLayout *outDsl, VkPipelineLayout *outPl)
-{
-    VkDescriptorSetLayoutBinding bindings[2];
-
-    bindings[0].binding = BINDING_SRC_BUFFER;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[0].pImmutableSamplers = NULL;
-
-    bindings[1].binding = BINDING_DST_IMAGE;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[1].pImmutableSamplers = NULL;
-
-    VkDescriptorSetLayoutCreateInfo dslci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2,
-        .pBindings = bindings
-    };
-    VkResult r = vkCreateDescriptorSetLayout(dev, &dslci, NULL, outDsl);
-    if (r != VK_SUCCESS) return r;
-
-    VkPushConstantRange pcr = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 4 * sizeof(uint32_t) };
-    VkPipelineLayoutCreateInfo plci = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = outDsl,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &pcr
-    };
-    return vkCreatePipelineLayout(dev, &plci, NULL, outPl);
-}
-
-static VkResult create_descriptor_pool(VkDevice dev, VkDescriptorPool *outPool)
-{
-    VkDescriptorPoolSize poolSizes[2];
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 1024;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = 1024;
-
-    VkDescriptorPoolCreateInfo dpci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO_SUCCESS;
 }
 
 /* Helpers */
