@@ -1,35 +1,21 @@
 #version 450
-// BC2 decoder: explicit 4-bit alpha + BC1 color (no uint64_t)
 layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
 layout(std430, binding = 0) readonly buffer Src { uint data[]; } srcBuf;
 layout(binding = 1, rgba8) writeonly uniform image2D dstImg;
 
-layout(push_constant) uniform Push { uint srcOffset; uint srcSize; uint width; uint height; } pc;
+layout(push_constant) uniform Push {
+    uint srcOffset;
+    uint srcSize;
+    uint width;
+    uint height;
+} pc;
 
-uint readByte(uint byteOffset) {
-    uint wordIndex = byteOffset >> 2;
-    uint shift     = (byteOffset & 3u) * 8u;
-    uint word      = srcBuf.data[wordIndex];
-    return (word >> shift) & 0xFFu;
-}
-uint readLE16(uint byteOffset) {
-    uint b0 = readByte(byteOffset + 0u);
-    uint b1 = readByte(byteOffset + 1u);
-    return (b1 << 8u) | b0;
-}
-uint readLE32(uint byteOffset) {
-    uint b0 = readByte(byteOffset + 0u);
-    uint b1 = readByte(byteOffset + 1u);
-    uint b2 = readByte(byteOffset + 2u);
-    uint b3 = readByte(byteOffset + 3u);
-    return (b3 << 24u) | (b2 << 16u) | (b1 << 8u) | b0;
-}
-uvec3 expand565(uint v) {
-    uint r5 = (v >> 11u) & 0x1Fu;
-    uint g6 = (v >> 5u)  & 0x3Fu;
-    uint b5 = (v)        & 0x1Fu;
-    return uvec3(r5 * 255u / 31u, g6 * 255u / 63u, b5 * 255u / 31u);
+uvec3 expand565(uint c) {
+    uint r = (c >> 11u) & 0x1Fu;
+    uint g = (c >> 5u) & 0x3Fu;
+    uint b = c & 0x1Fu;
+    return uvec3((r * 255u + 15u) / 31u, (g * 255u + 31u) / 63u, (b * 255u + 15u) / 31u);
 }
 
 void main() {
@@ -40,46 +26,46 @@ void main() {
     uint block_x = gx >> 2;
     uint block_y = gy >> 2;
     uint blocks_per_row = (pc.width + 3u) >> 2;
-    uint block_index    = block_y * blocks_per_row + block_x;
-    uint base           = pc.srcOffset + block_index * 16u;
+    uint block_index = block_y * blocks_per_row + block_x;
+    uint base = pc.srcOffset + block_index * 16u;
 
-    // First 8 bytes: alpha (16 x 4-bit values)
-    // Next 8 bytes: color (BC1)
-    uint alphaWord0 = readLE32(base + 0u);
-    uint alphaWord1 = readLE32(base + 4u);
-    uint c0         = readLE16(base + 8u);
-    uint c1         = readLE16(base + 10u);
-    uint lut        = readLE32(base + 12u);
+    // Alpha: 16 pixels, 4-bit each, packed little-endian across 8 bytes
+    uint a0 = srcBuf.data[(base + 0u) >> 2];
+    uint a1 = srcBuf.data[(base + 4u) >> 2];
+
+    uint px = gx & 3u;
+    uint py = gy & 3u;
+    uint pidx = py * 4u + px;
+
+    uint a4;
+    if (pidx < 8u) a4 = (a0 >> (pidx * 4u)) & 0xFu;
+    else           a4 = (a1 >> ((pidx - 8u) * 4u)) & 0xFu;
+    uint a8 = (a4 * 255u) / 15u;
+
+    // Color: BC1 block in next 8 bytes
+    uint c0_full = srcBuf.data[(base + 8u) >> 2];   // contains c0 (LE16) + top bits of c1 if unaligned
+    uint c1_full = srcBuf.data[(base + 10u) >> 2];  // contains remaining bits (we read LE16 directly via masks)
+    uint lut     = srcBuf.data[(base + 12u) >> 2];
+
+    uint c0 = c0_full & 0xFFFFu;
+    uint c1 = c1_full & 0xFFFFu;
 
     uvec3 col0 = expand565(c0);
     uvec3 col1 = expand565(c1);
 
-    uint px = gx & 3u;
-    uint py = gy & 3u;
-    uint pixel_index = py * 4u + px;
-
-    // alpha: 4 bits per pixel, little-endian packed
-    uint alpha4;
-    if (pixel_index < 8u)
-        alpha4 = (alphaWord0 >> (pixel_index * 4u)) & 0xFu;
-    else
-        alpha4 = (alphaWord1 >> ((pixel_index - 8u) * 4u)) & 0xFu;
-    uint alpha8 = (alpha4 * 255u) / 15u;
-
-    uint code = (lut >> (pixel_index * 2u)) & 0x3u;
-
+    uint code = (lut >> (pidx * 2u)) & 0x3u;
     uvec3 rgb;
     if (c0 > c1) {
-        if (code == 0u)       rgb = col0;
-        else if (code == 1u)  rgb = col1;
-        else if (code == 2u)  rgb = (2u*col0 + col1)/3u;
-        else                  rgb = (col0 + 2u*col1)/3u;
+        if (code == 0u)      rgb = col0;
+        else if (code == 1u) rgb = col1;
+        else if (code == 2u) rgb = (2u * col0 + col1 + uvec3(1u)) / 3u;
+        else                 rgb = (col0 + 2u * col1 + uvec3(1u)) / 3u;
     } else {
-        if (code == 0u)       rgb = col0;
-        else if (code == 1u)  rgb = col1;
-        else if (code == 2u)  rgb = (col0 + col1)/2u;
-        else                  rgb = uvec3(0u);
+        if (code == 0u)      rgb = col0;
+        else if (code == 1u) rgb = col1;
+        else if (code == 2u) rgb = (col0 + col1 + uvec3(1u)) / 2u;
+        else                 rgb = uvec3(0u);
     }
 
-    imageStore(dstImg, ivec2(gx, gy), vec4(vec3(rgb) / 255.0, float(alpha8) / 255.0));
+    imageStore(dstImg, ivec2(gx, gy), vec4(vec3(rgb) / 255.0, float(a8) / 255.0));
 }
