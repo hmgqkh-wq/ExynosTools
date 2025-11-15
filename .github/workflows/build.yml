@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Install dependencies
@@ -29,18 +29,17 @@ jobs:
       - name: Build
         run: cmake --build build-android -- -j$(nproc)
 
-      - name: Install to staging dir
+      - name: Install to staged root filesystem
         run: |
-          DESTDIR=staging cmake --install build-android
+          DESTDIR=package-root cmake --install build-android
 
-      - name: Package (CPack)
+      - name: Create compressed tarball
         run: |
-          cd build-android
-          cpack -G TXZ --config CPackConfig.cmake
-          mv *.tar.xz ../exynostools-android-arm64.tar.xz
+          tar -cf exynostools-android-arm64.tar -C package-root .
+          zstd exynostools-android-arm64.tar
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: exynostools-android-arm64
-          path: exynostools-android-arm64.tar.xz
+          path: exynostools-android-arm64.tar.zst
