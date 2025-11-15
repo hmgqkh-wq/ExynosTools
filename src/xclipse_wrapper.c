@@ -1,9 +1,4 @@
 // src/xclipse_wrapper.c
-// Full drop-in replacement for xclipse_wrapper.c (exact filename).
-// - Uses &vkGetInstanceProcAddr / &vkGetDeviceProcAddr checks to silence pointer-bool warnings
-// - Provides public resolve helpers and init/shutdown
-// - C99-compliant and self-contained
-
 #include <vulkan/vulkan.h>
 #include "xeno_log.h"
 #include <string.h>
