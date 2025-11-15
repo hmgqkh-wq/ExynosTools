@@ -9,7 +9,6 @@ extern "C" {
 #include <vulkan/vulkan.h>
 #include <stddef.h>
 
-/* Public buffer helpers used across the project */
 VkResult rt_create_buffer_with_memory(VkDevice device, VkPhysicalDevice physical,
                                       VkDeviceSize size, VkBufferUsageFlags usage,
                                       VkMemoryPropertyFlags properties,
