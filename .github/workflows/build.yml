@@ -1,100 +1,50 @@
-name: build-android-arm64
+name: Build and Package ExynosTools
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Install system packages
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake unzip ninja-build zstd python3-pip make glslang-tools libvulkan-dev wget curl git
+    - name: Set up dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y cmake ninja-build zstd glslang-tools
 
-      - name: Install Android NDK r25b and set ANDROID_NDK_HOME
-        run: |
-          set -euo pipefail
-          NDK_VER=r25b
-          TMPDIR="$RUNNER_TEMP/ndk-${NDK_VER}"
-          rm -rf "$TMPDIR"
-          mkdir -p "$TMPDIR"
-          ARCHIVE="android-ndk-${NDK_VER}-linux.zip"
-          URL="https://dl.google.com/android/repository/${ARCHIVE}"
-          curl -fsSL "$URL" -o "$TMPDIR/${ARCHIVE}"
-          unzip -q "$TMPDIR/${ARCHIVE}" -d "$TMPDIR"
-          NDK_PATH="$(realpath "$TMPDIR/android-ndk-${NDK_VER}")"
-          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
-          echo "NDK installed to $NDK_PATH"
+    - name: Configure CMake
+      run: |
+        cmake -S . -B build-android -DCMAKE_BUILD_TYPE=Release -G Ninja
 
-      - name: Ensure python3 and pip
-        run: |
-          python3 --version
-          pip3 --version || sudo apt-get install -y python3-pip
+    - name: Build project
+      run: |
+        cmake --build build-android --target exynostools exynostools_selfcheck -- -j$(nproc)
 
-      - name: Generate SPIR-V headers
-        run: |
-          set -euo pipefail
-          OUT_DIR=build-android/generated_spv
-          mkdir -p "$OUT_DIR"
-          SHADER_SRC_DIR=assets/shaders/src
-          NAMES="bc1 bc2 bc3 bc4 bc5 bc6h bc7"
-          for NAME in $NAMES; do
-            SRC="$SHADER_SRC_DIR/${NAME}.comp"
-            SPV="$OUT_DIR/${NAME}.spv"
-            HDR="$OUT_DIR/${NAME}_shader.h"
-            if [ -f "$SRC" ]; then
-              echo "Compiling $SRC"
-              glslangValidator -V -o "$SPV" "$SRC"
-              python3 scripts/spv_to_header.py "$SPV" "$HDR" "${NAME}_shader"
-            else
-              echo "Missing shader source: $SRC"
-              exit 1
-            fi
-          done
+    - name: Prepare artifact structure
+      run: |
+        mkdir -p xafan/exynostools-android-arm64/usr/bin
+        mkdir -p xafan/exynostools-android-arm64/assets/shaders/decode
 
-      - name: Configure CMake (Android arm64)
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
-        run: |
-          set -euo pipefail
-          if [ -z "${ANDROID_NDK_HOME:-}" ]; then echo "ANDROID_NDK_HOME not set"; exit 1; fi
-          cmake -S . -B build-android \
-            -G "Unix Makefiles" \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=31 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DANDROID_STL=c++_shared \
-            -DCMAKE_VERBOSE_MAKEFILE=ON
+        # Copy executables
+        cp build-android/exynostools xafan/exynostools-android-arm64/usr/bin/
+        cp build-android/exynostools_selfcheck xafan/exynostools-android-arm64/usr/bin/
 
-      - name: Build
-        run: cmake --build build-android --config Release -j
+        # Copy compiled shaders
+        find build-android/shaders -type f -name "*.spv" -exec cp {} xafan/exynostools-android-arm64/assets/shaders/decode/ \;
 
-      - name: Install to staging
-        run: cmake --install build-android --prefix "$(pwd)/staging" || true
+    - name: Create compressed artifact
+      run: |
+        tar -cf exynostools-android-arm64.tar -C xafan exynostools-android-arm64
+        zstd exynostools-android-arm64.tar
 
-      - name: Prepare package
-        run: |
-          mkdir -p pkg/usr/lib pkg/assets/shaders/decode
-          cp -v staging/usr/lib/* pkg/usr/lib/ || true
-          if [ -d build-android/generated_spv ]; then
-            cp -v build-android/generated_spv/*.spv pkg/assets/shaders/decode/ || true
-          fi
-          tar --zstd -cvf exynostools-android-arm64.tar.zst -C pkg .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: exynostools-android-arm64
-          path: exynostools-android-arm64.tar.zst
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: exynostools-android-arm64
+        path: exynostools-android-arm64.tar.zst
