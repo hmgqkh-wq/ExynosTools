@@ -9,20 +9,24 @@ extern "C" {
 #include <stdio.h>
 #include <stdarg.h>
 
+/*
+ Policy:
+ - If you have a single translation-unit implementation (e.g., src/logging.c),
+   define XENO_LOG_IMPLEMENTATION_PRESENT in that TU before including this header.
+   That will expose non-static prototypes so other TUs link to the real functions.
+ - Otherwise, this header provides static inline fallback implementations
+   so compilation succeeds even if no logging.c exists.
+*/
+
+/* When a real implementation exists, expose non-static prototypes for linkage. */
+#ifdef XENO_LOG_IMPLEMENTATION_PRESENT
+
 void logging_info(const char *fmt, ...);
 void logging_warn(const char *fmt, ...);
 void logging_error(const char *fmt, ...);
 void logging_debug(const char *fmt, ...);
 
-#define XENO_LOGI(...) logging_info(__VA_ARGS__)
-#define XENO_LOGW(...) logging_warn(__VA_ARGS__)
-#define XENO_LOGE(...) logging_error(__VA_ARGS__)
-#define XENO_LOGD(...) logging_debug(__VA_ARGS__)
-
-/* Inline fallback implementations if a translation unit does not provide them.
-   If you have a real src/logging.c implementation, define XENO_LOG_IMPLEMENTATION_PRESENT
-   in that file before including this header to avoid duplicate inline definitions. */
-#ifndef XENO_LOG_IMPLEMENTATION_PRESENT
+#else /* fallback static-inline implementations (header-only) */
 
 static inline void xeno_log_vprint(const char *tag, const char *fmt, va_list va)
 {
@@ -49,6 +53,12 @@ static inline void logging_debug(const char *fmt, ...)
 }
 
 #endif /* XENO_LOG_IMPLEMENTATION_PRESENT */
+
+/* Macros used across source */
+#define XENO_LOGI(...) logging_info(__VA_ARGS__)
+#define XENO_LOGW(...) logging_warn(__VA_ARGS__)
+#define XENO_LOGE(...) logging_error(__VA_ARGS__)
+#define XENO_LOGD(...) logging_debug(__VA_ARGS__)
 
 #ifdef __cplusplus
 }
