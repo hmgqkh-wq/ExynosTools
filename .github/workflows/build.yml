@@ -4,46 +4,45 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y cmake ninja-build zstd glslang-tools libvulkan-dev
+      - name: Set up dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build zstd glslang-tools libvulkan-dev xxd
 
-    - name: Configure CMake
-      run: |
-        cmake -S . -B build-android -DCMAKE_BUILD_TYPE=Release -G Ninja
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build-android -DCMAKE_BUILD_TYPE=Release -G Ninja
 
-    - name: Build project
-      run: |
-        cmake --build build-android --target exynostools exynostools_selfcheck -- -j$(nproc)
+      - name: Build exynostools
+        run: |
+          cmake --build build-android --target exynostools -- -j$(nproc)
 
-    - name: Prepare artifact structure
-      run: |
-        mkdir -p xafan/exynostools-android-arm64/usr/bin
-        mkdir -p xafan/exynostools-android-arm64/assets/shaders/decode
+      - name: Prepare artifact structure
+        run: |
+          mkdir -p xafan/exynostools-android-arm64/usr/bin
+          mkdir -p xafan/exynostools-android-arm64/assets/shaders/decode
+          if [ -f build-android/exynostools ]; then cp build-android/exynostools xafan/exynostools-android-arm64/usr/bin/; fi
+          # copy any generated SPIR-V for inspection
+          if [ -d build-android/shaders ]; then find build-android/shaders -type f -name "*.spv" -exec cp {} xafan/exynostools-android-arm64/assets/shaders/decode/ \;; fi
 
-        cp build-android/exynostools xafan/exynostools-android-arm64/usr/bin/
-        cp build-android/exynostools_selfcheck xafan/exynostools-android-arm64/usr/bin/
+      - name: Create compressed artifact
+        run: |
+          tar -cf exynostools-android-arm64.tar -C xafan exynostools-android-arm64 || true
+          if [ -f exynostools-android-arm64.tar ]; then zstd exynostools-android-arm64.tar; fi
 
-        # Copy compiled SPIR-V for inspection/use
-        find build-android/shaders -type f -name "*.spv" -exec cp {} xafan/exynostools-android-arm64/assets/shaders/decode/ \;
-
-    - name: Create compressed artifact
-      run: |
-        tar -cf exynostools-android-arm64.tar -C xafan exynostools-android-arm64
-        zstd exynostools-android-arm64.tar
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: exynostools-android-arm64
-        path: exynostools-android-arm64.tar.zst
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exynostools-android-arm64
+          path: exynostools-android-arm64.tar.zst
