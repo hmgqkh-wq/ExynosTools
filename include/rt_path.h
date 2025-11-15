@@ -8,9 +8,10 @@ extern "C" {
 
 #include <vulkan/vulkan.h>
 #include <stddef.h>
-#include <stdint.h>
 
-/* Exposed helpers for buffer creation/upload and utilities used by other units. */
+/* Exposed helpers for buffer creation, upload and small utilities.
+   These declarations must be visible to any translation unit that calls them. */
+
 VkResult rt_create_buffer_with_memory(VkDevice device, VkPhysicalDevice physical,
                                       VkDeviceSize size, VkBufferUsageFlags usage,
                                       VkMemoryPropertyFlags properties,
