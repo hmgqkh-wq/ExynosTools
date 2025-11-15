@@ -11,6 +11,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Output paths (keep .so in build root for your script)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
 # ----------------------------- Paths -------------------------------------
 set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
 set(DRIVERS_XCLIPSE_DIR "${CMAKE_SOURCE_DIR}/src/drivers/xclipse")
@@ -57,12 +61,10 @@ if(EXISTS "${SHADERS_SRC_DIR}")
     set(_out_spv    "${GENERATED_SHADER_DIR}/${_base}.spv")
     set(_out_c      "${GENERATED_SHADER_DIR}/${_base}_spv.c")
 
-    # Read original and normalize CRLF to LF
+    # Normalize line endings and ensure #version
     file(READ "${_infile}" _raw_content)
     string(REPLACE "\r\n" "\n" _content "${_raw_content}")
     string(REPLACE "\r" "\n" _content "${_content}")
-
-    # Ensure a sensible #version for Vulkan shaders if missing
     string(REGEX MATCH "^[[:space:]]*#version" _has_version "${_content}")
     if(_has_version)
       file(WRITE "${_sanitized}" "${_content}")
@@ -70,7 +72,7 @@ if(EXISTS "${SHADERS_SRC_DIR}")
       file(WRITE "${_sanitized}" "#version 450\n${_content}")
     endif()
 
-    # Determine shader stage (defaults to comp)
+    # Determine stage
     if(_ext_l STREQUAL ".comp")
       set(_stage "comp")
     elseif(_ext_l STREQUAL ".frag")
@@ -81,14 +83,14 @@ if(EXISTS "${SHADERS_SRC_DIR}")
       set(_stage "comp")
     endif()
 
-    # Re-read sanitized content to detect main entrypoint
+    # Detect entrypoint
     file(READ "${_sanitized}" _san_content)
     string(REGEX MATCH "void[[:space:]]+main[[:space:]]*\\(" _has_main "${_san_content}")
     if(NOT _has_main)
       string(REGEX MATCH "main[[:space:]]*\\(" _has_main "${_san_content}")
     endif()
 
-    # Create compile-or-touch rule
+    # Compile or touch
     if(BUILD_SHADERS)
       if(_has_main)
         if(GLSLANG_VALIDATOR)
@@ -140,7 +142,7 @@ if(EXISTS "${SHADERS_SRC_DIR}")
       endif()
     endif()
 
-    # Embed the SPIR-V into C via xxd -i (create C array)
+    # Embed SPIR-V into C via xxd -i
     add_custom_command(
       OUTPUT "${_out_c}"
       COMMAND ${CMAKE_COMMAND} -E echo "Embedding ${_out_spv} -> ${_out_c}"
@@ -164,16 +166,13 @@ endif()
 # ---------------------- Collect project sources --------------------------
 file(GLOB_RECURSE PROJECT_SRCS "${SRC_DIR}/*.c")
 
-# Exclude selfcheck.c by default to avoid duplicate main unless BUILD_SELFTEST=ON
+# Exclude selfcheck.c unless requested
 set(_selfcheck_path "${CMAKE_SOURCE_DIR}/src/selfcheck.c")
 if(NOT BUILD_SELFTEST AND EXISTS "${_selfcheck_path}")
-  message(STATUS "BUILD_SELFTEST=OFF: excluding ${_selfcheck_path} from build to avoid duplicate main")
   list(REMOVE_ITEM PROJECT_SRCS "${_selfcheck_path}")
 endif()
 
-# Exclude known conflict files from the main executable to prevent duplicate symbols.
-# These files may belong to the driver/plugin and must not be compiled into the exe.
-# Adjust patterns here if you add new conflicting files.
+# Exclude known conflicts from the host executable
 set(_conflict_files
   "${CMAKE_SOURCE_DIR}/src/shaders_embed_stub.c"
   "${CMAKE_SOURCE_DIR}/src/shaders_embed.c"
@@ -181,133 +180,126 @@ set(_conflict_files
   "${CMAKE_SOURCE_DIR}/src/xeno_log_stream_stub.c"
   "${CMAKE_SOURCE_DIR}/src/xeno_wrapper_stubs.c"
 )
-
 foreach(_cf IN LISTS _conflict_files)
   if(EXISTS "${_cf}")
     list(REMOVE_ITEM PROJECT_SRCS "${_cf}")
-    message(STATUS "Excluding conflicting source from exe: ${_cf}")
   endif()
 endforeach()
 
-# ---------------------- Xclipse driver shared lib -------------------------
+# ---------------------- Xeno wrapper shared lib (.so plugin) --------------
+# Combine driver sources + wrapper; include generated shader arrays
 set(XCLIPSE_SRCS "")
 if(EXISTS "${DRIVERS_XCLIPSE_DIR}")
   file(GLOB_RECURSE XCLIPSE_SRCS "${DRIVERS_XCLIPSE_DIR}/*.c" "${DRIVERS_XCLIPSE_DIR}/*.h")
-  # Allow driver to include generated shader embed C files
-  # Also ensure the driver includes any stub file patterns if present.
-  # (We avoid including the top-level src/shaders_embed_stub.c in exe; plugin may include its own embed.)
 endif()
 
-if(XCLIPSE_SRCS)
-  add_library(xclipse_driver SHARED ${XCLIPSE_SRCS})
-  target_include_directories(xclipse_driver PRIVATE "${INCLUDE_DIR}" "${DRIVERS_XCLIPSE_DIR}")
-
-  # Add generated shader embed C arrays into the driver, not the exe, to avoid duplicates.
-  if(GENERATED_SHADER_C_FILES)
-    target_sources(xclipse_driver PRIVATE ${GENERATED_SHADER_C_FILES})
+# Wrapper sources (adjust if you rename files)
+set(WRAPPER_SRCS "")
+foreach(f
+  xeno_wrapper.c
+  xclipse_wrapper.c
+  rt_path.c
+  async.c
+  vrs.c
+  emulate.c
+  bc_emulate.c
+  create_common_layouts_and_pipelines.c
+)
+  if(EXISTS "${SRC_DIR}/${f}")
+    list(APPEND WRAPPER_SRCS "${SRC_DIR}/${f}")
   endif()
+endforeach()
 
-  set_target_properties(xclipse_driver PROPERTIES OUTPUT_NAME "xclipse")
-  if(NOT MSVC)
-    target_compile_options(xclipse_driver PRIVATE -fPIC -fvisibility=hidden)
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.13")
-      set_target_properties(xclipse_driver PROPERTIES C_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
-    endif()
-  endif()
+add_library(xeno_wrapper SHARED ${XCLIPSE_SRCS} ${WRAPPER_SRCS})
+add_dependencies(xeno_wrapper exy_generate_shaders)
+target_include_directories(xeno_wrapper PRIVATE "${INCLUDE_DIR}" "${DRIVERS_XCLIPSE_DIR}" "${GENERATED_SHADER_DIR}")
 
-  # Link Vulkan for driver if available
-  find_package(Vulkan QUIET)
-  if(Vulkan_FOUND)
-    target_include_directories(xclipse_driver PRIVATE ${Vulkan_INCLUDE_DIRS})
-    target_link_libraries(xclipse_driver PRIVATE ${Vulkan_LIBRARIES})
-  else()
-    find_library(LIBVULKAN_NEEDED NAMES vulkan libvulkan vulkan-1 HINTS /usr/lib /usr/local/lib /lib /opt)
-    if(LIBVULKAN_NEEDED)
-      target_link_libraries(xclipse_driver PRIVATE ${LIBVULKAN_NEEDED})
-    endif()
+if(GENERATED_SHADER_C_FILES)
+  target_sources(xeno_wrapper PRIVATE ${GENERATED_SHADER_C_FILES})
+endif()
+
+# Output name must be libxeno_wrapper.so at build root
+set_target_properties(xeno_wrapper PROPERTIES
+  OUTPUT_NAME "xeno_wrapper"
+  C_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
+if(NOT MSVC)
+  target_compile_options(xeno_wrapper PRIVATE -fPIC -fvisibility=hidden -O3 -Wall -Wextra -Wno-unused-parameter)
+endif()
+
+# Link Vulkan
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+  target_include_directories(xeno_wrapper PRIVATE ${Vulkan_INCLUDE_DIRS})
+  target_link_libraries(xeno_wrapper PRIVATE ${Vulkan_LIBRARIES})
+else()
+  find_library(LIBVULKAN_NEEDED NAMES vulkan libvulkan vulkan-1 HINTS /usr/lib /usr/local/lib /lib /opt)
+  if(LIBVULKAN_NEEDED)
+    target_link_libraries(xeno_wrapper PRIVATE ${LIBVULKAN_NEEDED})
   endif()
 endif()
 
-# ---------------------- Build main executable -----------------------------
+# Optional: export init symbol hint (ensure your source defines xeno_init)
+target_compile_definitions(xeno_wrapper PRIVATE XENO_EXPORT_INIT_SYMBOL=xeno_init)
+
+# ---------------------- Host executable (optional) ------------------------
 add_executable(exynostools ${PROJECT_SRCS})
 add_dependencies(exynostools exy_generate_shaders)
 target_include_directories(exynostools PRIVATE "${INCLUDE_DIR}" "${GENERATED_SHADER_DIR}")
-
-# IMPORTANT: do NOT link the shared driver into the executable to avoid duplicates.
-# The driver is a plugin (.so) installed separately. If you need to load it at runtime,
-# use dlopen() on the installed .so instead of linking against it.
-
-# ---------------------- Compiler / linker flags -------------------------
-if(ENABLE_LTO AND NOT DEFINED ANDROID_NDK_HOME)
-  include(CheckIPOSupported)
-  check_ipo_supported(RESULT ipo_supported OUTPUT ipo_out)
-  if(ipo_supported)
-    set_target_properties(exynostools PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
-    if(TARGET xclipse_driver)
-      set_target_properties(xclipse_driver PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
-    endif()
-  endif()
-endif()
-
-if(NOT CMAKE_TOOLCHAIN_FILE)
-  target_compile_options(exynostools PRIVATE -O3)
-  if(TARGET xclipse_driver)
-    target_compile_options(xclipse_driver PRIVATE -O3)
-  endif()
-endif()
-
 if(NOT MSVC)
-  target_compile_options(exynostools PRIVATE -Wall -Wextra -Wno-unused-parameter)
-  if(TARGET xclipse_driver)
-    target_compile_options(xclipse_driver PRIVATE -Wall -Wextra -Wno-unused-parameter)
-  endif()
+  target_compile_options(exynostools PRIVATE -O3 -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# ---------------------- System libs -------------------------------------
+# System libs
 if(UNIX)
   find_package(Threads REQUIRED)
   target_link_libraries(exynostools PRIVATE ${CMAKE_THREAD_LIBS_INIT})
   find_library(LIBDL dl)
   if(LIBDL)
     target_link_libraries(exynostools PRIVATE ${LIBDL})
-    if(TARGET xclipse_driver)
-      target_link_libraries(xclipse_driver PRIVATE ${LIBDL})
-    endif()
+    target_link_libraries(xeno_wrapper PRIVATE ${LIBDL})
   endif()
 endif()
 
-# ---------------------- Install manifest (complete) ---------------------
-install(TARGETS exynostools RUNTIME DESTINATION usr/bin)
-
-if(TARGET xclipse_driver)
-  install(TARGETS xclipse_driver LIBRARY DESTINATION usr/lib)
-  # also install driver runtime tree for Winlator-style layout
-  install(DIRECTORY ${DRIVERS_XCLIPSE_DIR}/ DESTINATION usr/share/exynostools/drivers/xclipse FILES_MATCHING PATTERN "*.*")
+# LTO
+if(ENABLE_LTO AND NOT DEFINED ANDROID_NDK_HOME)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT ipo_supported OUTPUT ipo_out)
+  if(ipo_supported)
+    set_target_properties(exynostools PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_target_properties(xeno_wrapper PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+  endif()
 endif()
 
+# ---------------------- Install to staging (Winlator-style) ---------------
+# Install plugin
+install(TARGETS xeno_wrapper LIBRARY DESTINATION usr/lib)
+# Install host exe (optional)
+install(TARGETS exynostools RUNTIME DESTINATION usr/bin)
+
+# Install generated shaders (SPV + embedded C)
+if(EXISTS "${GENERATED_SHADER_DIR}")
+  install(DIRECTORY ${GENERATED_SHADER_DIR}/ DESTINATION usr/share/exynostools/shaders
+          FILES_MATCHING PATTERN "*.spv" PATTERN "*_spv.c" PATTERN "*_spv.h")
+endif()
+
+# Install raw shader sources for debugging
+if(EXISTS "${SHADERS_SRC_DIR}")
+  install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/shaders/src/ DESTINATION usr/share/exynostools/shaders/src
+          FILES_MATCHING PATTERN "*.comp" PATTERN "*.glsl" PATTERN "*.frag" PATTERN "*.vert")
+endif()
+
+# Install headers (after you removed duplicates)
 if(EXISTS "${INCLUDE_DIR}")
   install(DIRECTORY ${INCLUDE_DIR}/ DESTINATION usr/include FILES_MATCHING PATTERN "*.h")
 endif()
 
-if(EXISTS "${GENERATED_SHADER_DIR}")
-  install(DIRECTORY ${GENERATED_SHADER_DIR}/ DESTINATION usr/share/exynostools/shaders FILES_MATCHING PATTERN "*.spv" PATTERN "*_spv.c" PATTERN "*_spv.h")
+# Install any runtime configs you keep in repo (script will copy final ones from etc/)
+if(EXISTS "${CMAKE_SOURCE_DIR}/src")
+  install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/ DESTINATION usr/share/exynostools/src
+          FILES_MATCHING PATTERN "*.c" PATTERN "*.h" PATTERN "*.inl" PATTERN "*.conf" PATTERN "*.json" PATTERN "*.xml" PATTERN "*.sh")
 endif()
 
-if(EXISTS "${SHADERS_SRC_DIR}")
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/shaders/ DESTINATION assets/shaders FILES_MATCHING PATTERN "*.comp" PATTERN "*.glsl" PATTERN "*.frag" PATTERN "*.vert")
-endif()
-
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/ DESTINATION usr/share/exynostools/src FILES_MATCHING PATTERN "*.c" PATTERN "*.h" PATTERN "*.inl" PATTERN "*.conf" PATTERN "*.json" PATTERN "*.xml" PATTERN "*.sh")
-
-if(EXISTS "${CMAKE_SOURCE_DIR}/src/create_common_layouts_and_pipelines")
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/create_common_layouts_and_pipelines/ DESTINATION usr/share/exynostools/layouts)
-endif()
-if(EXISTS "${CMAKE_SOURCE_DIR}/src/app_profile")
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/app_profile/ DESTINATION usr/share/exynostools/profiles)
-endif()
-
-if(EXISTS "${CMAKE_SOURCE_DIR}/assets")
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/ DESTINATION assets)
-endif()
-
-message(STATUS "CMake configured. BUILD_SHADERS=${BUILD_SHADERS} BUILD_SELFTEST=${BUILD_SELFTEST} SHADER_TARGET_ENV=${SHADER_TARGET_ENV}")
+message(STATUS "Configured. BUILD_SHADERS=${BUILD_SHADERS} BUILD_SELFTEST=${BUILD_SELFTEST} SHADER_TARGET_ENV=${SHADER_TARGET_ENV}")
