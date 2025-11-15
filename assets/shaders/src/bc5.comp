@@ -1,23 +1,42 @@
 #version 450
-// BC5 dual-channel (two BC4 streams), 32-bit loads only
 layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
 layout(std430, binding = 0) readonly buffer Src { uint data[]; } srcBuf;
 layout(binding = 1, rg8) writeonly uniform image2D dstImg;
 
-layout(push_constant) uniform Push { uint srcOffset; uint srcSize; uint width; uint height; } pc;
+layout(push_constant) uniform Push {
+    uint srcOffset;
+    uint srcSize;
+    uint width;
+    uint height;
+} pc;
 
-uint readByte(uint byteOffset) {
-    uint wordIndex = byteOffset >> 2;
-    uint shift     = (byteOffset & 3u) * 8u;
-    uint word      = srcBuf.data[wordIndex];
-    return (word >> shift) & 0xFFu;
+uint readIdx24(uint base) {
+    uint w0 = srcBuf.data[(base + 2u) >> 2];
+    uint w1 = srcBuf.data[(base + 4u) >> 2];
+    return ((w0 & 0x00FFFFFFu) | ((w1 & 0x0000FFFFu) << 24u));
 }
 
-uint extractApproxIndex(uint base, uint pixel_index) {
-    // Same coarse 4-bit mapping as bc4.comp for robustness without 64-bit ops
-    uint idxByte = readByte(base + 2u + (pixel_index >> 1));
-    return ((pixel_index & 1u) == 0u) ? (idxByte & 0x0Fu) : ((idxByte >> 4u) & 0x0Fu);
+float interpAlpha(uint a0, uint a1, uint idx) {
+    if (a0 > a1) {
+        if (idx == 0u) return float(a0) / 255.0;
+        if (idx == 1u) return float(a1) / 255.0;
+        if (idx == 2u) return ((6.0 * a0 + 1.0 * a1) / 7.0) / 255.0;
+        if (idx == 3u) return ((5.0 * a0 + 2.0 * a1) / 7.0) / 255.0;
+        if (idx == 4u) return ((4.0 * a0 + 3.0 * a1) / 7.0) / 255.0;
+        if (idx == 5u) return ((3.0 * a0 + 4.0 * a1) / 7.0) / 255.0;
+        if (idx == 6u) return ((2.0 * a0 + 5.0 * a1) / 7.0) / 255.0;
+        return ((1.0 * a0 + 6.0 * a1) / 7.0) / 255.0;
+    } else {
+        if (idx == 0u) return float(a0) / 255.0;
+        if (idx == 1u) return float(a1) / 255.0;
+        if (idx == 2u) return ((4.0 * a0 + 1.0 * a1) / 5.0) / 255.0;
+        if (idx == 3u) return ((3.0 * a0 + 2.0 * a1) / 5.0) / 255.0;
+        if (idx == 4u) return ((2.0 * a0 + 3.0 * a1) / 5.0) / 255.0;
+        if (idx == 5u) return ((1.0 * a0 + 4.0 * a1) / 5.0) / 255.0;
+        if (idx == 6u) return 0.0;
+        return 1.0;
+    }
 }
 
 void main() {
@@ -28,19 +47,30 @@ void main() {
     uint block_x = gx >> 2;
     uint block_y = gy >> 2;
     uint blocks_per_row = (pc.width + 3u) >> 2;
-    uint block_index    = block_y * blocks_per_row + block_x;
-    uint base           = pc.srcOffset + block_index * 16u;
+    uint block_index = block_y * blocks_per_row + block_x;
+    uint base = pc.srcOffset + block_index * 16u;
+
+    // Channel R at base+0, Channel G at base+8
+    uint r_a0 = srcBuf.data[(base + 0u) >> 2] & 0xFFu;
+    uint r_a1 = (srcBuf.data[(base + 0u) >> 2] >> 8u) & 0xFFu;
+    uint r_idx24 = readIdx24(base);
+
+    uint g_a0 = srcBuf.data[(base + 8u) >> 2] & 0xFFu;
+    uint g_a1 = (srcBuf.data[(base + 8u) >> 2] >> 8u) & 0xFFu;
+    uint g_idx24 = readIdx24(base + 8u);
 
     uint px = gx & 3u;
     uint py = gy & 3u;
-    uint pixel_index = py * 4u + px;
+    uint pidx = py * 4u + px;
 
-    // Channel 0 at base + 0, channel 1 at base + 8
-    uint idx0 = extractApproxIndex(base + 0u, pixel_index);
-    uint idx1 = extractApproxIndex(base + 8u, pixel_index);
+    uint r_shift = pidx * 3u;
+    uint g_shift = pidx * 3u;
 
-    uint r8 = (idx0 * 255u) / 15u;
-    uint g8 = (idx1 * 255u) / 15u;
+    uint r_idx = (r_idx24 >> r_shift) & 0x7u;
+    uint g_idx = (g_idx24 >> g_shift) & 0x7u;
 
-    imageStore(dstImg, ivec2(gx, gy), vec4(float(r8) / 255.0, float(g8) / 255.0, 0.0, 1.0));
+    float r = interpAlpha(r_a0, r_a1, r_idx);
+    float g = interpAlpha(g_a0, g_a1, g_idx);
+
+    imageStore(dstImg, ivec2(gx, gy), vec4(r, g, 0.0, 1.0));
 }
