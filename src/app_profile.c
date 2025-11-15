@@ -1,6 +1,11 @@
-#include "xeno_log.h"
+/*
+  src/app_profile.c
+  Application profile detection stub.
+*/
+#include "logging.h"
 
-void app_profile_stub(void)
-{
-    XENO_LOGI("app_profile_stub");
+int app_profile_detect(const char *app_name) {
+    if (!app_name) return 0;
+    logging_info("App profile detection: %s", app_name);
+    return 1; // always returns detected for now
 }
