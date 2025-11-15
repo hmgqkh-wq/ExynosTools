@@ -1,2 +1,17 @@
-{ "name": "ExynosTools", "version": "v1.3.0", "description": "Production-grade Vulkan wrapper for Xclipse with complete BCn emulation and HUD" }
-
+{
+  "name": "xclipse-940",
+  "library": "libxeno_wrapper.so",
+  "entry": "xeno_init",
+  "target": "vulkan1.3",
+  "features": {
+    "spirv_embedded": true,
+    "pipeline_cache": true,
+    "performance_mode": true,
+    "ray_tracing": true,
+    "async_compile": true
+  },
+  "assets": {
+    "shaders": "usr/share/exynostools/shaders",
+    "profiles": "etc/exynostools/profiles"
+  }
+}
