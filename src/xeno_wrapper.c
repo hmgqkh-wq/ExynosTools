@@ -4,7 +4,7 @@
 #include "xeno_log.h"
 #include "xeno_bc.h"
 
-/* If your loader supplies originals, declare them extern here. They may be NULL. */
+/* If loader originals exist, declare them extern here. They may be NULL. */
 extern PFN_vkCreateDevice vkCreateDevice_original;
 extern PFN_vkCmdBeginRenderPass vkCmdBeginRenderPass_original;
 
