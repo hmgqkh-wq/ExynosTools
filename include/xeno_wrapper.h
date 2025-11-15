@@ -9,7 +9,7 @@ extern "C" {
 #include <vulkan/vulkan.h>
 #include "xeno_bc.h"
 
-/* Public prototypes for xeno wrapper functions used by other modules. */
+/* Public prototypes for wrapper functions used by other TUs */
 VkResult xeno_wrapper_create_device(VkPhysicalDevice physicalDevice,
                                     const VkDeviceCreateInfo *pCreateInfo,
                                     const VkAllocationCallbacks *pAllocator,
