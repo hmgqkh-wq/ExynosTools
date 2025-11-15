@@ -1,6 +1,4 @@
 // src/rt_path.c
-// Full drop-in implementation matching include/rt_path.h prototypes.
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -10,7 +8,6 @@
 #include "rt_path.h"
 #include "xeno_log.h"
 
-/* Internal helper to query buffer device address (static/internal). */
 static VkDeviceAddress get_buffer_device_address_internal(VkDevice device, VkBuffer buffer)
 {
     if (device == VK_NULL_HANDLE || buffer == VK_NULL_HANDLE) return (VkDeviceAddress)0;
@@ -28,7 +25,6 @@ static VkDeviceAddress get_buffer_device_address_internal(VkDevice device, VkBuf
     return fn(device, &info);
 }
 
-/* Create a buffer and allocate+bind memory for it. */
 VkResult rt_create_buffer_with_memory(VkDevice device, VkPhysicalDevice physical,
                                       VkDeviceSize size, VkBufferUsageFlags usage,
                                       VkMemoryPropertyFlags properties,
@@ -100,7 +96,6 @@ VkResult rt_create_buffer_with_memory(VkDevice device, VkPhysicalDevice physical
     return VK_SUCCESS;
 }
 
-/* Destroy buffer and associated memory (no-op safe). */
 void rt_destroy_buffer_with_memory(VkDevice device, VkBuffer buffer, VkDeviceMemory memory)
 {
     if (device == VK_NULL_HANDLE) return;
@@ -108,11 +103,9 @@ void rt_destroy_buffer_with_memory(VkDevice device, VkBuffer buffer, VkDeviceMem
     if (memory != VK_NULL_HANDLE) vkFreeMemory(device, memory, NULL);
 }
 
-/* Upload raw data into mapped device memory (exposed). */
 VkResult rt_upload_to_buffer(VkDevice device, VkDeviceMemory memory, VkDeviceSize offset, const void *data, VkDeviceSize size, VkPhysicalDevice physical)
 {
-    (void)physical; /* may be unused here */
-
+    (void)physical;
     if (!device || memory == VK_NULL_HANDLE || !data || size == 0) return VK_ERROR_INITIALIZATION_FAILED;
 
     void *mapped = NULL;
@@ -128,7 +121,6 @@ VkResult rt_upload_to_buffer(VkDevice device, VkDeviceMemory memory, VkDeviceSiz
     return VK_SUCCESS;
 }
 
-/* Choose a sensible staging buffer size (exposed). */
 size_t rt_guess_staging_size(VkDeviceSize requested)
 {
     const size_t MIN = 64u * 1024u;
@@ -139,7 +131,6 @@ size_t rt_guess_staging_size(VkDeviceSize requested)
     return s;
 }
 
-/* Log a buffer's device address for diagnostics (exposed). */
 void rt_log_buffer_address(VkDevice device, VkBuffer buffer)
 {
     VkDeviceAddress addr = get_buffer_device_address_internal(device, buffer);
