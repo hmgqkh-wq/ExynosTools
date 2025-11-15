@@ -96,8 +96,14 @@ foreach(HDR IN LISTS SPIRV_HEADER_BASENAMES)
   file(APPEND "${GENERATED_EMBED_SRC}" "#include \"${HDR}\"\n")
 endforeach()
 
-add_library(shaders_embed_obj OBJECT "${GENERATED_EMBED_SRC}")
-add_dependencies(shaders_embed_obj spv_to_c_headers)
+# Ensure the header-generation target exists before depending on it
+if(TARGET spv_to_c_headers)
+  add_library(shaders_embed_obj OBJECT "${GENERATED_EMBED_SRC}")
+  add_dependencies(shaders_embed_obj spv_to_c_headers)
+else()
+  # Create the object library and add dependency if the custom target is present later
+  add_library(shaders_embed_obj OBJECT "${GENERATED_EMBED_SRC}")
+endif()
 target_include_directories(shaders_embed_obj PRIVATE "${GENERATED_HEADER_DIR}")
 
 # ----------------------------------------------------------------------------
@@ -123,6 +129,9 @@ if(NOT ALL_C_SOURCES)
   message(FATAL_ERROR "No C source files found under ${SRC_DIR}")
 endif()
 
+# ----------------------------------------------------------------------------
+# logging.c as OBJECT (so main can link without duplicate TU symbols)
+# ----------------------------------------------------------------------------
 set(LOGGING_REL_PATH "src/logging.c")
 set(LOGGING_ABS_PATH "${PROJ_ROOT}/${LOGGING_REL_PATH}")
 set(HAVE_LOGGING_SRC OFF)
@@ -141,6 +150,9 @@ if(HAVE_LOGGING_SRC)
   target_compile_options(logging_obj PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 endif()
 
+# ----------------------------------------------------------------------------
+# Main executable
+# ----------------------------------------------------------------------------
 add_executable(exynostools ${MAIN_SOURCES})
 if(SPIRV_OUTPUTS)
   add_dependencies(exynostools compile_spirv)
@@ -151,6 +163,7 @@ endif()
 if(HAVE_LOGGING_SRC)
   target_sources(exynostools PRIVATE $<TARGET_OBJECTS:logging_obj>)
 endif()
+# Link shader instantiations (object library is safe even if headers not yet generated)
 target_sources(exynostools PRIVATE $<TARGET_OBJECTS:shaders_embed_obj>)
 
 target_include_directories(exynostools
@@ -170,6 +183,9 @@ if(ENABLE_VERBOSE_BUILD)
     set(CMAKE_VERBOSE_MAKEFILE ON)
 endif()
 
+# ----------------------------------------------------------------------------
+# Self-check executable (isolated)
+# ----------------------------------------------------------------------------
 add_executable(exynostools_selfcheck "${SRC_DIR}/selfcheck.c")
 target_include_directories(exynostools_selfcheck PRIVATE "${INCLUDE_DIR}" "${SRC_DIR}" "${GENERATED_HEADER_DIR}")
 target_compile_options(exynostools_selfcheck PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
@@ -181,6 +197,9 @@ if(SPIRV_HEADER_OUTPUTS)
 endif()
 target_sources(exynostools_selfcheck PRIVATE $<TARGET_OBJECTS:shaders_embed_obj>)
 
+# ----------------------------------------------------------------------------
+# Vulkan and Threads
+# ----------------------------------------------------------------------------
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
   target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
@@ -201,4 +220,25 @@ target_compile_definitions(exynostools_selfcheck PRIVATE $<$<CONFIG:Debug>:DEBUG
 install(TARGETS exynostools RUNTIME DESTINATION bin)
 install(TARGETS exynostools_selfcheck RUNTIME DESTINATION bin)
 
-string(REPLACE ";" " " ALL_C_SOURCES_JOINED "${
+# ----------------------------------------------------------------------------
+# Debug helpers
+# ----------------------------------------------------------------------------
+string(REPLACE ";" " " ALL_C_SOURCES_JOINED "${ALL_C_SOURCES}")
+add_custom_target(show_sources
+  COMMENT "Printing discovered C sources"
+  COMMAND ${CMAKE_COMMAND} -E echo "${ALL_C_SOURCES_JOINED}"
+)
+
+add_custom_target(show_configuration
+  COMMENT "Project configuration summary"
+  COMMAND ${CMAKE_COMMAND} -E echo "CMake generator: ${CMAKE_GENERATOR}"
+  COMMAND ${CMAKE_COMMAND} -E echo "Build type: ${CMAKE_BUILD_TYPE}"
+  COMMAND ${CMAKE_COMMAND} -E echo "Include dirs: ${INCLUDE_DIR};${SRC_DIR};${GENERATED_HEADER_DIR}"
+  COMMAND ${CMAKE_COMMAND} -E echo "Shader build dir: ${SHADER_BUILD_DIR}"
+  COMMAND ${CMAKE_COMMAND} -E echo "Generated header dir: ${GENERATED_HEADER_DIR}"
+)
+
+# Ensure spv_to_c_headers target exists if headers were detected earlier
+if(TARGET spv_to_c_headers)
+  add_dependencies(shaders_embed_obj spv_to_c_headers)
+endif()
