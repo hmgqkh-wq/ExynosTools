@@ -1,48 +1,48 @@
 #version 450
-// BC3 decoder: BC4-like alpha + BC1 color (no uint64_t)
 layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
 layout(std430, binding = 0) readonly buffer Src { uint data[]; } srcBuf;
-layout(binding = 1, rgba8) writeonly uniform image2D dstImg;
+layout(binding = 1, r8) writeonly uniform image2D dstImg;
 
-layout(push_constant) uniform Push { uint srcOffset; uint srcSize; uint width; uint height; } pc;
+layout(push_constant) uniform Push {
+    uint srcOffset;
+    uint srcSize;
+    uint width;
+    uint height;
+} pc;
 
-uint readByte(uint byteOffset) {
-    uint wordIndex = byteOffset >> 2;
-    uint shift     = (byteOffset & 3u) * 8u;
-    uint word      = srcBuf.data[wordIndex];
-    return (word >> shift) & 0xFFu;
-}
-uint readLE16(uint byteOffset) {
-    uint b0 = readByte(byteOffset + 0u);
-    uint b1 = readByte(byteOffset + 1u);
-    return (b1 << 8u) | b0;
-}
-uint readLE32(uint byteOffset) {
-    uint b0 = readByte(byteOffset + 0u);
-    uint b1 = readByte(byteOffset + 1u);
-    uint b2 = readByte(byteOffset + 2u);
-    uint b3 = readByte(byteOffset + 3u);
-    return (b3 << 24u) | (b2 << 16u) | (b1 << 8u) | b0;
-}
-uvec3 expand565(uint v) {
-    uint r5 = (v >> 11u) & 0x1Fu;
-    uint g6 = (v >> 5u)  & 0x3Fu;
-    uint b5 = (v)        & 0x1Fu;
-    return uvec3(r5 * 255u / 31u, g6 * 255u / 63u, b5 * 255u / 31u);
+// Read 24 bits of index stream (16 * 3 bits) from 6 bytes starting at base+2
+uint readIndex24(uint base) {
+    // Indices span 6 bytes; each read picks consecutive bytes and packs.
+    uint w0 = srcBuf.data[(base + 2u) >> 2];
+    uint w1 = srcBuf.data[(base + 4u) >> 2];
+    // Reconstruct 48-bit window enough to slice 24 bits (we only need 24; keep two 32-bit words)
+    // Ensure little-endian order per DXT spec when extracting.
+    return ((w0 & 0x00FFFFFFu) | ((w1 & 0x0000FFFFu) << 24u));
 }
 
-// Minimal BC3 alpha decode: derive 3-bit index stream from packed bytes
-// Normally BC3 alpha uses endpoints and 3-bit indices; this version assumes a monotonic mapping.
-uint readAlphaIndex(uint baseAlphaLE32_0, uint baseAlphaLE32_1, uint pixel_index) {
-    uint bits;
-    if (pixel_index < 8u) {
-        bits = (baseAlphaLE32_0 >> (pixel_index * 4u)) & 0xFu; // pragmatic simplification
+float interpAlpha(uint a0, uint a1, uint idx) {
+    if (a0 > a1) {
+        // 8-entry interpolation
+        if (idx == 0u) return float(a0) / 255.0;
+        if (idx == 1u) return float(a1) / 255.0;
+        if (idx == 2u) return ((6.0 * a0 + 1.0 * a1) / 7.0) / 255.0;
+        if (idx == 3u) return ((5.0 * a0 + 2.0 * a1) / 7.0) / 255.0;
+        if (idx == 4u) return ((4.0 * a0 + 3.0 * a1) / 7.0) / 255.0;
+        if (idx == 5u) return ((3.0 * a0 + 4.0 * a1) / 7.0) / 255.0;
+        if (idx == 6u) return ((2.0 * a0 + 5.0 * a1) / 7.0) / 255.0;
+        return ((1.0 * a0 + 6.0 * a1) / 7.0) / 255.0;
     } else {
-        bits = (baseAlphaLE32_1 >> ((pixel_index - 8u) * 4u)) & 0xFu;
+        // 6-entry + two fixed endpoints
+        if (idx == 0u) return float(a0) / 255.0;
+        if (idx == 1u) return float(a1) / 255.0;
+        if (idx == 2u) return ((4.0 * a0 + 1.0 * a1) / 5.0) / 255.0;
+        if (idx == 3u) return ((3.0 * a0 + 2.0 * a1) / 5.0) / 255.0;
+        if (idx == 4u) return ((2.0 * a0 + 3.0 * a1) / 5.0) / 255.0;
+        if (idx == 5u) return ((1.0 * a0 + 4.0 * a1) / 5.0) / 255.0;
+        if (idx == 6u) return 0.0;
+        return 1.0;
     }
-    // Map 0..15 to 0..255
-    return (bits * 255u) / 15u;
 }
 
 void main() {
@@ -53,38 +53,20 @@ void main() {
     uint block_x = gx >> 2;
     uint block_y = gy >> 2;
     uint blocks_per_row = (pc.width + 3u) >> 2;
-    uint block_index    = block_y * blocks_per_row + block_x;
-    uint base           = pc.srcOffset + block_index * 16u;
+    uint block_index = block_y * blocks_per_row + block_x;
+    uint base = pc.srcOffset + block_index * 8u;
 
-    // Alpha (first 8 bytes) + BC1 color (next 8 bytes)
-    uint a0 = readLE32(base + 0u);
-    uint a1 = readLE32(base + 4u);
-    uint c0 = readLE16(base + 8u);
-    uint c1 = readLE16(base + 10u);
-    uint lut= readLE32(base + 12u);
-
-    uvec3 col0 = expand565(c0);
-    uvec3 col1 = expand565(c1);
+    uint a0 = srcBuf.data[(base + 0u) >> 2] & 0xFFu;
+    uint a1 = (srcBuf.data[(base + 0u) >> 2] >> 8u) & 0xFFu;
+    uint idx24 = readIndex24(base);
 
     uint px = gx & 3u;
     uint py = gy & 3u;
-    uint pixel_index = py * 4u + px;
+    uint pidx = py * 4u + px;
 
-    uint alpha8 = readAlphaIndex(a0, a1, pixel_index);
+    uint shift = pidx * 3u;
+    uint idx = (idx24 >> shift) & 0x7u;
 
-    uint code = (lut >> (pixel_index * 2u)) & 0x3u;
-    uvec3 rgb;
-    if (c0 > c1) {
-        if (code == 0u)       rgb = col0;
-        else if (code == 1u)  rgb = col1;
-        else if (code == 2u)  rgb = (2u*col0 + col1)/3u;
-        else                  rgb = (col0 + 2u*col1)/3u;
-    } else {
-        if (code == 0u)       rgb = col0;
-        else if (code == 1u)  rgb = col1;
-        else if (code == 2u)  rgb = (col0 + col1)/2u;
-        else                  rgb = uvec3(0u);
-    }
-
-    imageStore(dstImg, ivec2(gx, gy), vec4(vec3(rgb) / 255.0, float(alpha8) / 255.0));
+    float v = interpAlpha(a0, a1, idx);
+    imageStore(dstImg, ivec2(gx, gy), vec4(v, 0.0, 0.0, 1.0));
 }
