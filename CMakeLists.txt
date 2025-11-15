@@ -20,7 +20,9 @@ set(GENERATED_HEADER_DIR "${CMAKE_BINARY_DIR}/generated_includes")
 
 include_directories(${GENERATED_HEADER_DIR})
 
-# Shader discovery
+# ----------------------------------------------------------------------------
+# Shader discovery and build to SPIR-V + C headers
+# ----------------------------------------------------------------------------
 file(GLOB_RECURSE SHADER_SOURCES_RAW_REL
   RELATIVE "${PROJ_ROOT}"
   "${SRC_DIR}/*.comp"
@@ -85,7 +87,9 @@ if(SPIRV_HEADER_OUTPUTS)
   add_custom_target(spv_to_c_headers ALL DEPENDS ${SPIRV_HEADER_OUTPUTS})
 endif()
 
-# C source discovery
+# ----------------------------------------------------------------------------
+# Discover C sources (exclude shaders/assets)
+# ----------------------------------------------------------------------------
 file(GLOB_RECURSE ALL_C_SOURCES_RAW_REL
     RELATIVE "${PROJ_ROOT}"
     "${SRC_DIR}/*.c"
@@ -105,11 +109,12 @@ if(NOT ALL_C_SOURCES)
   message(FATAL_ERROR "No C source files found under ${SRC_DIR}")
 endif()
 
-# Logging TU
+# ----------------------------------------------------------------------------
+# logging.c as OBJECT
+# ----------------------------------------------------------------------------
 set(LOGGING_REL_PATH "src/logging.c")
 set(LOGGING_ABS_PATH "${PROJ_ROOT}/${LOGGING_REL_PATH}")
 set(HAVE_LOGGING_SRC OFF)
-
 foreach(f IN LISTS ALL_C_SOURCES)
   if(f STREQUAL "${LOGGING_ABS_PATH}")
     set(HAVE_LOGGING_SRC ON)
@@ -125,7 +130,9 @@ if(HAVE_LOGGING_SRC)
   target_compile_options(logging_obj PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 endif()
 
-# Executable
+# ----------------------------------------------------------------------------
+# Main executable
+# ----------------------------------------------------------------------------
 add_executable(exynostools ${MAIN_SOURCES})
 if(SPIRV_OUTPUTS)
   add_dependencies(exynostools compile_spirv)
@@ -154,50 +161,44 @@ if(ENABLE_VERBOSE_BUILD)
     set(CMAKE_VERBOSE_MAKEFILE ON)
 endif()
 
-# Platform detection
-set(TARGET_IS_AARCH64 FALSE)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_C_COMPILER_TARGET MATCHES "aarch64")
-    set(TARGET_IS_AARCH64 TRUE)
+# ----------------------------------------------------------------------------
+# Self-check executable
+# ----------------------------------------------------------------------------
+add_executable(exynostools_selfcheck "${SRC_DIR}/selfcheck.c")
+target_include_directories(exynostools_selfcheck PRIVATE "${INCLUDE_DIR}" "${SRC_DIR}" "${GENERATED_HEADER_DIR}")
+target_compile_options(exynostools_selfcheck PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+
+if(SPIRV_OUTPUTS)
+  add_dependencies(exynostools_selfcheck compile_spirv)
+endif()
+if(SPIRV_HEADER_OUTPUTS)
+  add_dependencies(exynostools_selfcheck spv_to_c_headers)
 endif()
 
-if(TARGET_IS_AARCH64)
-    message(STATUS "AArch64 target detected; skipping unsupported linker flags for Android")
-endif()
-
-# Vulkan
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
-    target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
-    target_link_libraries(exynostools PRIVATE ${Vulkan_LIBRARIES})
+  target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
+  target_link_libraries(exynostools PRIVATE ${Vulkan_LIBRARIES})
+  target_include_directories(exynostools_selfcheck PRIVATE ${Vulkan_INCLUDE_DIRS})
+  target_link_libraries(exynostools_selfcheck PRIVATE ${Vulkan_LIBRARIES})
 endif()
 
-# Threads
 find_package(Threads QUIET)
 if(THREADS_FOUND)
-    target_link_libraries(exynostools PRIVATE Threads::Threads)
+  target_link_libraries(exynostools PRIVATE Threads::Threads)
+  target_link_libraries(exynostools_selfcheck PRIVATE Threads::Threads)
 endif()
 
-target_compile_definitions(exynostools PRIVATE
-    $<$<CONFIG:Debug>:DEBUG=1>
-)
+target_compile_definitions(exynostools PRIVATE $<$<CONFIG:Debug>:DEBUG=1>)
+target_compile_definitions(exynostools_selfcheck PRIVATE $<$<CONFIG:Debug>:DEBUG=1>)
 
 install(TARGETS exynostools RUNTIME DESTINATION bin)
+install(TARGETS exynostools_selfcheck RUNTIME DESTINATION bin)
 
+# ----------------------------------------------------------------------------
 # Debug helpers
+# ----------------------------------------------------------------------------
 string(REPLACE ";" " " ALL_C_SOURCES_JOINED "${ALL_C_SOURCES}")
 add_custom_target(show_sources
   COMMENT "Printing discovered C sources"
-  COMMAND ${CMAKE_COMMAND} -E echo "${ALL_C_SOURCES_JOINED}"
-)
-
-add_custom_target(show_configuration
-  COMMENT "Project configuration summary"
-  COMMAND ${CMAKE_COMMAND} -E echo "CMake generator: ${CMAKE_GENERATOR}"
-  COMMAND ${CMAKE_COMMAND} -E echo "Build type: ${CMAKE_BUILD_TYPE}"
-  COMMAND ${CMAKE_COMMAND} -E echo "Have logging TU: ${HAVE_LOGGING_SRC}"
-  COMMAND ${CMAKE_COMMAND} -E echo "Target is aarch64: ${TARGET_IS_AARCH64}"
-  COMMAND ${CMAKE_COMMAND} -E echo "Include dirs: ${INCLUDE_DIR};${SRC_DIR};${GENERATED_HEADER_DIR}"
-)
-
-message(STATUS "ExynosTools configured. Shader sources: ${SHADER_SOURCES_RAW_REL}")
-message(STATUS "Generated header dir: ${GENERATED_HEADER_DIR}")
+  COMMAND ${CMAKE_COMMAND} -E echo "${ALL
