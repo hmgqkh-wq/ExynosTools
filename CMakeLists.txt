@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 project(ExynosTools C)
 
-# Language and standard
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -19,34 +18,25 @@ set(INCLUDE_DIR "${PROJ_ROOT}/include")
 set(SHADER_BUILD_DIR "${CMAKE_BINARY_DIR}/shaders")
 set(GENERATED_HEADER_DIR "${CMAKE_BINARY_DIR}/generated_includes")
 
-# Ensure generated include dir is available to all translation units
 include_directories(${GENERATED_HEADER_DIR})
 
-# ----------------------------------------------------------------------------
-# Shader discovery: find GLSL/HLSL compute/vert/frag files under src
-# ----------------------------------------------------------------------------
+# Shader discovery
 file(GLOB_RECURSE SHADER_SOURCES_RAW_REL
   RELATIVE "${PROJ_ROOT}"
   "${SRC_DIR}/*.comp"
-  "${SRC_DIR}/*.comp.glsl"
   "${SRC_DIR}/*.frag"
   "${SRC_DIR}/*.vert"
   "${SRC_DIR}/*.glsl"
 )
 
-# Prepare lists to collect outputs
 set(SPIRV_OUTPUTS "")
 set(SPIRV_HEADER_OUTPUTS "")
-set(SHADER_BASENAMES "")
 
-# Helper: function to add SPV->C header rule (no external script required)
 function(add_spv_to_c_rule SPV_IN HEADER_OUT NAME_WE)
   get_filename_component(HEADER_DIR "${HEADER_OUT}" DIRECTORY)
   add_custom_command(
     OUTPUT "${HEADER_OUT}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${HEADER_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E echo "Generating C header ${HEADER_OUT} from ${SPV_IN}"
-    # Run a shell one-liner: prefer xxd -i, otherwise fallback to hexdump
     COMMAND /bin/sh -c "if command -v xxd >/dev/null 2>&1; then \
          xxd -i '${SPV_IN}' | sed -E 's/^unsigned int /const uint32_t /; s/^unsigned long /const size_t /; s/^(\\s*)unsigned int (\\w+)_spv\\[\\] =/const uint32_t \\2_spv[] =/; s/^(\\s*)unsigned long (\\w+)_spv_len =/const size_t \\2_spv_len =/;' > '${HEADER_OUT}'; \
        else \
@@ -64,43 +54,30 @@ function(add_spv_to_c_rule SPV_IN HEADER_OUT NAME_WE)
   )
 endfunction()
 
-# ----------------------------------------------------------------------------
-# For each shader source: compile to SPIR-V (.spv) then convert to C header in build tree
-# ----------------------------------------------------------------------------
 foreach(relpath IN LISTS SHADER_SOURCES_RAW_REL)
   set(SRC_ABS "${PROJ_ROOT}/${relpath}")
   get_filename_component(DIR_PART "${relpath}" DIRECTORY)
   get_filename_component(NAME_WE "${relpath}" NAME_WE)
 
-  # Output SPV path inside build tree, preserving subdir
   set(SPV_OUT "${SHADER_BUILD_DIR}/${DIR_PART}/${NAME_WE}.spv")
   list(APPEND SPIRV_OUTPUTS "${SPV_OUT}")
 
-  # Header path (generated_includes/<DIR_PART>_<NAME_WE>_spv.h to avoid nested dirs in include)
-  # Create a safe header name replacing '/' with '_' to flatten structure in generated_includes
   string(REPLACE "/" "_" HDR_BASENAME "${DIR_PART}/${NAME_WE}_spv.h")
   set(HEADER_OUT "${GENERATED_HEADER_DIR}/${HDR_BASENAME}")
   list(APPEND SPIRV_HEADER_OUTPUTS "${HEADER_OUT}")
 
-  # Keep basenames for later reference (optional)
-  list(APPEND SHADER_BASENAMES "${NAME_WE}")
-
-  # Custom command: compile GLSL -> SPV using glslangValidator
   add_custom_command(
     OUTPUT "${SPV_OUT}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<SHELL_PATH:${SHADER_BUILD_DIR}/${DIR_PART}>"
-    COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader ${SRC_ABS} -> ${SPV_OUT}"
     COMMAND glslangValidator -V "${SRC_ABS}" -o "${SPV_OUT}"
     DEPENDS "${SRC_ABS}"
     COMMENT "Compiling shader to SPIR-V: ${relpath}"
     VERBATIM
   )
 
-  # Add SPV->C header rule (inline function above)
   add_spv_to_c_rule("${SPV_OUT}" "${HEADER_OUT}" "${NAME_WE}")
 endforeach()
 
-# Make aggregate targets so headers/SPV are generated before build
 if(SPIRV_OUTPUTS)
   add_custom_target(compile_spirv ALL DEPENDS ${SPIRV_OUTPUTS})
 endif()
@@ -108,9 +85,7 @@ if(SPIRV_HEADER_OUTPUTS)
   add_custom_target(spv_to_c_headers ALL DEPENDS ${SPIRV_HEADER_OUTPUTS})
 endif()
 
-# ----------------------------------------------------------------------------
-# Gather C sources only and exclude shader/asset directories
-# ----------------------------------------------------------------------------
+# C source discovery
 file(GLOB_RECURSE ALL_C_SOURCES_RAW_REL
     RELATIVE "${PROJ_ROOT}"
     "${SRC_DIR}/*.c"
@@ -127,16 +102,14 @@ foreach(rel IN LISTS ALL_C_SOURCES_RAW_REL)
 endforeach()
 
 if(NOT ALL_C_SOURCES)
-  message(FATAL_ERROR "No C source files found under ${SRC_DIR} — check repository layout")
+  message(FATAL_ERROR "No C source files found under ${SRC_DIR}")
 endif()
 
-# ----------------------------------------------------------------------------
-# Logging TU special-case: compile src/logging.c as OBJECT with XENO_LOG_IMPLEMENTATION_PRESENT
-# ----------------------------------------------------------------------------
+# Logging TU
 set(LOGGING_REL_PATH "src/logging.c")
 set(LOGGING_ABS_PATH "${PROJ_ROOT}/${LOGGING_REL_PATH}")
-
 set(HAVE_LOGGING_SRC OFF)
+
 foreach(f IN LISTS ALL_C_SOURCES)
   if(f STREQUAL "${LOGGING_ABS_PATH}")
     set(HAVE_LOGGING_SRC ON)
@@ -152,19 +125,14 @@ if(HAVE_LOGGING_SRC)
   target_compile_options(logging_obj PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 endif()
 
-# ----------------------------------------------------------------------------
-# Main executable
-# ----------------------------------------------------------------------------
+# Executable
 add_executable(exynostools ${MAIN_SOURCES})
-
-# Ensure generated headers and SPV are built before the executable
 if(SPIRV_OUTPUTS)
   add_dependencies(exynostools compile_spirv)
 endif()
 if(SPIRV_HEADER_OUTPUTS)
   add_dependencies(exynostools spv_to_c_headers)
 endif()
-
 if(HAVE_LOGGING_SRC)
   target_sources(exynostools PRIVATE $<TARGET_OBJECTS:logging_obj>)
 endif()
@@ -176,9 +144,6 @@ target_include_directories(exynostools
         "${GENERATED_HEADER_DIR}"
 )
 
-# ----------------------------------------------------------------------------
-# Compiler options
-# ----------------------------------------------------------------------------
 target_compile_options(exynostools PRIVATE
     -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 )
@@ -189,28 +154,24 @@ if(ENABLE_VERBOSE_BUILD)
     set(CMAKE_VERBOSE_MAKEFILE ON)
 endif()
 
-# ----------------------------------------------------------------------------
-# Platform detection, Vulkan, Threads
-# ----------------------------------------------------------------------------
+# Platform detection
 set(TARGET_IS_AARCH64 FALSE)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_C_COMPILER_TARGET MATCHES "aarch64")
     set(TARGET_IS_AARCH64 TRUE)
 endif()
 
 if(TARGET_IS_AARCH64)
-    message(STATUS "AArch64 target detected; attempting to apply AArch64-specific linker flags if supported")
-    # If your toolchain rejects the following option, remove this line.
-    target_link_options(exynostools PRIVATE "--fix-cortex-a53-843419")
+    message(STATUS "AArch64 target detected; skipping unsupported linker flags for Android")
 endif()
 
+# Vulkan
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
     target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
     target_link_libraries(exynostools PRIVATE ${Vulkan_LIBRARIES})
-else()
-    message(STATUS "Vulkan not found by CMake; link may fail if Vulkan symbols used")
 endif()
 
+# Threads
 find_package(Threads QUIET)
 if(THREADS_FOUND)
     target_link_libraries(exynostools PRIVATE Threads::Threads)
@@ -222,13 +183,10 @@ target_compile_definitions(exynostools PRIVATE
 
 install(TARGETS exynostools RUNTIME DESTINATION bin)
 
-# ----------------------------------------------------------------------------
-# Safe debug helpers
-# ----------------------------------------------------------------------------
+# Debug helpers
 string(REPLACE ";" " " ALL_C_SOURCES_JOINED "${ALL_C_SOURCES}")
 add_custom_target(show_sources
-  COMMENT "Printing discovered C sources (safe)"
-  COMMAND ${CMAKE_COMMAND} -E echo "Discovered C sources:"
+  COMMENT "Printing discovered C sources"
   COMMAND ${CMAKE_COMMAND} -E echo "${ALL_C_SOURCES_JOINED}"
 )
 
@@ -236,10 +194,10 @@ add_custom_target(show_configuration
   COMMENT "Project configuration summary"
   COMMAND ${CMAKE_COMMAND} -E echo "CMake generator: ${CMAKE_GENERATOR}"
   COMMAND ${CMAKE_COMMAND} -E echo "Build type: ${CMAKE_BUILD_TYPE}"
-  COMMAND ${CMAKE_COMMAND} -E echo "Have logging TU (src/logging.c): ${HAVE_LOGGING_SRC}"
+  COMMAND ${CMAKE_COMMAND} -E echo "Have logging TU: ${HAVE_LOGGING_SRC}"
   COMMAND ${CMAKE_COMMAND} -E echo "Target is aarch64: ${TARGET_IS_AARCH64}"
   COMMAND ${CMAKE_COMMAND} -E echo "Include dirs: ${INCLUDE_DIR};${SRC_DIR};${GENERATED_HEADER_DIR}"
 )
 
-message(STATUS "ExynosTools configured. Discovered shaders: ${SHADER_SOURCES_RAW_REL}")
+message(STATUS "ExynosTools configured. Shader sources: ${SHADER_SOURCES_RAW_REL}")
 message(STATUS "Generated header dir: ${GENERATED_HEADER_DIR}")
