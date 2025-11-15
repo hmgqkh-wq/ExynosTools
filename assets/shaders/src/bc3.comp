@@ -11,62 +11,36 @@ layout(push_constant) uniform Push {
     uint height;
 } pc;
 
-float decodeAlpha(uint a0, uint a1, uint index) {
-    if (a0 > a1) {
-        float table[8] = float[8](float(a0)/255.0, float(a1)/255.0,
-            (6.0*a0 + 1.0*a1)/7.0/255.0, (5.0*a0 + 2.0*a1)/7.0/255.0,
-            (4.0*a0 + 3.0*a1)/7.0/255.0, (3.0*a0 + 4.0*a1)/7.0/255.0,
-            (2.0*a0 + 5.0*a1)/7.0/255.0, (1.0*a0 + 6.0*a1)/7.0/255.0);
-        return table[index];
-    } else {
-        float table[8] = float[8](float(a0)/255.0, float(a1)/255.0,
-            (4.0*a0 + 1.0*a1)/5.0/255.0, (3.0*a0 + 2.0*a1)/5.0/255.0,
-            (2.0*a0 + 3.0*a1)/5.0/255.0, (1.0*a0 + 4.0*a1)/5.0/255.0,
-            0.0, 1.0);
-        return table[index];
-    }
+uvec3 expand565(uint c) {
+    uint r = (c >> 11u) & 0x1Fu;
+    uint g = (c >> 5u) & 0x3Fu;
+    uint b = c & 0x1Fu;
+    return uvec3((r * 255u + 15u) / 31u, (g * 255u + 31u) / 63u, (b * 255u + 15u) / 31u);
 }
 
-vec4 decodeBC3(uint baseOffset, uint px, uint py) {
-    uint a0 = srcBuf.data[(baseOffset + 0u) >> 2] & 0xFFu;
-    uint a1 = (srcBuf.data[(baseOffset + 0u) >> 2] >> 8u) & 0xFFu;
-
-    uint alphaIndex = 0u;
-    for (uint i = 0u; i < 6u; ++i) {
-        alphaIndex |= (srcBuf.data[(baseOffset + 2u + i) >> 2] & 0xFFu) << (i * 8u);
-    }
-
-    uint pixel_index = py * 4u + px;
-    uint alpha_code = (alphaIndex >> (pixel_index * 3u)) & 0x7u;
-    float alpha = decodeAlpha(a0, a1, alpha_code);
-
-    // BC1 color decode (same as bc1.comp)
-    uint c0 = srcBuf.data[(baseOffset + 8u) >> 2];
-    uint c1 = srcBuf.data[(baseOffset + 10u) >> 2];
-    uint lut = srcBuf.data[(baseOffset + 12u) >> 2];
-
-    uvec3 col0 = uvec3(((c0 >> 11u) & 0x1Fu) * 255u / 31u,
-                       ((c0 >> 5u) & 0x3Fu) * 255u / 63u,
-                       (c0 & 0x1Fu) * 255u / 31u);
-    uvec3 col1 = uvec3(((c1 >> 11u) & 0x1Fu) * 255u / 31u,
-                       ((c1 >> 5u) & 0x3Fu) * 255u / 63u,
-                       (c1 & 0x1Fu) * 255u / 31u);
-
-    uint code = (lut >> (pixel_index * 2u)) & 0x3u;
-    uvec3 rgb;
-    if (c0 > c1) {
-        if (code == 0u) rgb = col0;
-        else if (code == 1u) rgb = col1;
-        else if (code == 2u) rgb = (2u * col0 + col1 + uvec3(1u)) / 3u;
-        else rgb = (col0 + 2u * col1 + uvec3(1u)) / 3u;
+float decodeAlpha(uint a0, uint a1, uint idx) {
+    if (a0 > a1) {
+        float table[8] = float[8](
+            float(a0)/255.0, float(a1)/255.0,
+            (6.0*a0 + 1.0*a1)/7.0/255.0,
+            (5.0*a0 + 2.0*a1)/7.0/255.0,
+            (4.0*a0 + 3.0*a1)/7.0/255.0,
+            (3.0*a0 + 4.0*a1)/7.0/255.0,
+            (2.0*a0 + 5.0*a1)/7.0/255.0,
+            (1.0*a0 + 6.0*a1)/7.0/255.0
+        );
+        return table[idx];
     } else {
-        if (code == 0u) rgb = col0;
-        else if (code == 1u) rgb = col1;
-        else if (code == 2u) rgb = (col0 + col1 + uvec3(1u)) / 2u;
-        else rgb = uvec3(0u);
+        float table[8] = float[8](
+            float(a0)/255.0, float(a1)/255.0,
+            (4.0*a0 + 1.0*a1)/5.0/255.0,
+            (3.0*a0 + 2.0*a1)/5.0/255.0,
+            (2.0*a0 + 3.0*a1)/5.0/255.0,
+            (1.0*a0 + 4.0*a1)/5.0/255.0,
+            0.0, 1.0
+        );
+        return table[idx];
     }
-
-    return vec4(vec3(rgb) / 255.0, alpha);
 }
 
 void main() {
@@ -82,5 +56,39 @@ void main() {
 
     uint px = gx & 3u;
     uint py = gy & 3u;
+    uint pidx = py * 4u + px;
 
-    vec4 color = decode
+    // Alpha decode
+    uint a0 = srcBuf.data[(base + 0u) >> 2] & 0xFFu;
+    uint a1 = (srcBuf.data[(base + 0u) >> 2] >> 8u) & 0xFFu;
+
+    uint idx24_lo = srcBuf.data[(base + 2u) >> 2];
+    uint idx24_hi = srcBuf.data[(base + 4u) >> 2];
+    uint alphaIndex = (idx24_lo & 0x00FFFFFFu) | ((idx24_hi & 0x0000FFFFu) << 24u);
+    uint alpha_code = (alphaIndex >> (pidx * 3u)) & 0x7u;
+    float alpha = decodeAlpha(a0, a1, alpha_code);
+
+    // Color decode (BC1)
+    uint c0 = srcBuf.data[(base + 8u) >> 2] & 0xFFFFu;
+    uint c1 = srcBuf.data[(base + 10u) >> 2] & 0xFFFFu;
+    uint lut = srcBuf.data[(base + 12u) >> 2];
+
+    uvec3 col0 = expand565(c0);
+    uvec3 col1 = expand565(c1);
+
+    uint code = (lut >> (pidx * 2u)) & 0x3u;
+    uvec3 rgb;
+    if (c0 > c1) {
+        if (code == 0u)      rgb = col0;
+        else if (code == 1u) rgb = col1;
+        else if (code == 2u) rgb = (2u * col0 + col1 + uvec3(1u)) / 3u;
+        else                 rgb = (col0 + 2u * col1 + uvec3(1u)) / 3u;
+    } else {
+        if (code == 0u)      rgb = col0;
+        else if (code == 1u) rgb = col1;
+        else if (code == 2u) rgb = (col0 + col1 + uvec3(1u)) / 2u;
+        else                 rgb = uvec3(0u);
+    }
+
+    imageStore(dstImg, ivec2(gx, gy), vec4(vec3(rgb) / 255.0, alpha));
+}
