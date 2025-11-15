@@ -11,7 +11,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Output paths (ensure libxeno_wrapper.so lands in build/)
+# Output paths
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
@@ -61,14 +61,13 @@ if(EXISTS "${SHADERS_SRC_DIR}")
     set(_out_spv    "${GENERATED_SHADER_DIR}/${_base}.spv")
     set(_out_c      "${GENERATED_SHADER_DIR}/${_base}_spv.c")
 
-    # Read content and strip BOM + CRs + leading whitespace
+    # Read content, normalize newlines, and ensure '#version 450' is the first line
     file(READ "${_infile}" _raw_content)
-    string(REGEX REPLACE "^\xEF\xBB\xBF" "" _content "${_raw_content}") # strip UTF-8 BOM
-    string(REPLACE "\r\n" "\n" _content "${_content}")
+    string(REPLACE "\r\n" "\n" _content "${_raw_content}")
     string(REPLACE "\r" "\n" _content "${_content}")
+    # Remove leading blank lines and spaces
     string(REGEX REPLACE "^[ \t\n\r]*" "" _content "${_content}")
-
-    # First line/version handling: force clean "#version 450"
+    # Replace any existing first line with a clean '#version 450'
     string(REGEX MATCH "^[^\n]*" _first_line "${_content}")
     string(REGEX MATCH "^[[:space:]]*#version[[:space:]]+[0-9]+" _has_version "${_first_line}")
     if(_has_version)
@@ -137,7 +136,6 @@ if(EXISTS "${SHADERS_SRC_DIR}")
         )
       endif()
     else()
-      # Shaders disabled
       if(_ext_l STREQUAL ".spv")
         add_custom_command(
           OUTPUT "${_out_spv}"
@@ -206,7 +204,7 @@ if(EXISTS "${DRIVERS_XCLIPSE_DIR}")
   file(GLOB_RECURSE XCLIPSE_SRCS "${DRIVERS_XCLIPSE_DIR}/*.c" "${DRIVERS_XCLIPSE_DIR}/*.h")
 endif()
 
-# Wrapper feature units (optional, only added if present)
+# Optional wrapper feature units (added only if present)
 set(WRAPPER_SRCS)
 foreach(f
   xeno_wrapper.c
@@ -243,7 +241,7 @@ if(NOT MSVC)
   target_compile_options(xeno_wrapper PRIVATE -fPIC -fvisibility=hidden -O3 -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# Link Vulkan (best-effort)
+# Link Vulkan
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
   target_include_directories(xeno_wrapper PRIVATE ${Vulkan_INCLUDE_DIRS})
@@ -255,14 +253,13 @@ else()
   endif()
 endif()
 
-# Expect an init symbol (ensure it's defined in your sources)
+# Expect init symbol (ensure xeno_init exists)
 target_compile_definitions(xeno_wrapper PRIVATE XENO_EXPORT_INIT_SYMBOL=xeno_init)
 
 # ---------------------- Host executable ----------------------------------
 add_executable(exynostools ${PROJECT_SRCS})
 add_dependencies(exynostools exy_generate_shaders)
 target_include_directories(exynostools PRIVATE "${INCLUDE_DIR}" "${GENERATED_SHADER_DIR}")
-
 if(NOT MSVC)
   target_compile_options(exynostools PRIVATE -O3 -Wall -Wextra -Wno-unused-parameter)
 endif()
