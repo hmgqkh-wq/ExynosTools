@@ -1,15 +1,8 @@
 // src/drivers/xclipse/vrs.c
-// Full drop-in replacement for VRS handling (Xclipse driver).
-// - Uses only declared Vulkan typedefs present in vulkan_core.h
-// - Calls vkCmdSetFragmentShadingRateKHR (KHR) when available, converting NV enum to VkExtent2D
-// - Calls vkCmdSetFragmentShadingRateEnumNV (NV) when available
-// - No undeclared identifiers, C99-compliant, defensive checks for proc availability
-
 #include <vulkan/vulkan.h>
 #include "xeno_log.h"
 
-/* Conservative mapping of VkFragmentShadingRateNV enum values to VkExtent2D.
-   Choose safe sizes that represent the intended per-pixel reductions. */
+/* Map VkFragmentShadingRateNV enum to conservative VkExtent2D */
 static VkExtent2D xclipse_vrs_nv_to_extent(VkFragmentShadingRateNV rate)
 {
     switch (rate) {
@@ -24,20 +17,10 @@ static VkExtent2D xclipse_vrs_nv_to_extent(VkFragmentShadingRateNV rate)
     }
 }
 
-/* Public API: set VRS for a command buffer given an NV enum value.
-   Preference order:
-     1) KHR entry (vkCmdSetFragmentShadingRateKHR) using VkExtent2D
-     2) NV enum entry (vkCmdSetFragmentShadingRateEnumNV) using enum
-   If neither is available, the call is a no-op and logs info.
-*/
 void xclipse_vrs_set_rate(VkCommandBuffer cmd, VkFragmentShadingRateNV rate)
 {
     if (cmd == VK_NULL_HANDLE) return;
 
-    /* Attempt to resolve the KHR function (expects VkExtent2D*).
-       Use vkGetDeviceProcAddr with a NULL device to try the loader; if your build
-       environment requires a real device handle, callers should resolve and cache
-       these function pointers at device creation time instead. */
     PFN_vkCmdSetFragmentShadingRateKHR fnKHR =
         (PFN_vkCmdSetFragmentShadingRateKHR)vkGetDeviceProcAddr(VK_NULL_HANDLE, "vkCmdSetFragmentShadingRateKHR");
     if (fnKHR) {
@@ -46,9 +29,6 @@ void xclipse_vrs_set_rate(VkCommandBuffer cmd, VkFragmentShadingRateNV rate)
         return;
     }
 
-    /* If KHR variant is not present, try NV enum variant that accepts the enum directly.
-       The NV symbol name in headers is vkCmdSetFragmentShadingRateEnumNV (not the NV typedef name).
-       Resolve and call it if available. */
     PFN_vkCmdSetFragmentShadingRateEnumNV fnEnumNV =
         (PFN_vkCmdSetFragmentShadingRateEnumNV)vkGetDeviceProcAddr(VK_NULL_HANDLE, "vkCmdSetFragmentShadingRateEnumNV");
     if (fnEnumNV) {
