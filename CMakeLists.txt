@@ -171,25 +171,45 @@ if(NOT BUILD_SELFTEST AND EXISTS "${_selfcheck_path}")
   list(REMOVE_ITEM PROJECT_SRCS "${_selfcheck_path}")
 endif()
 
+# Exclude known conflict files from the main executable to prevent duplicate symbols.
+# These files may belong to the driver/plugin and must not be compiled into the exe.
+# Adjust patterns here if you add new conflicting files.
+set(_conflict_files
+  "${CMAKE_SOURCE_DIR}/src/shaders_embed_stub.c"
+  "${CMAKE_SOURCE_DIR}/src/shaders_embed.c"
+  "${CMAKE_SOURCE_DIR}/src/xeno_log_stream.c"
+  "${CMAKE_SOURCE_DIR}/src/xeno_log_stream_stub.c"
+  "${CMAKE_SOURCE_DIR}/src/xeno_wrapper_stubs.c"
+)
+
+foreach(_cf IN LISTS _conflict_files)
+  if(EXISTS "${_cf}")
+    list(REMOVE_ITEM PROJECT_SRCS "${_cf}")
+    message(STATUS "Excluding conflicting source from exe: ${_cf}")
+  endif()
+endforeach()
+
 # ---------------------- Xclipse driver shared lib -------------------------
 set(XCLIPSE_SRCS "")
 if(EXISTS "${DRIVERS_XCLIPSE_DIR}")
   file(GLOB_RECURSE XCLIPSE_SRCS "${DRIVERS_XCLIPSE_DIR}/*.c" "${DRIVERS_XCLIPSE_DIR}/*.h")
-  # Filter out any accidentally included generated or top-level shared files that may conflict.
-  # Exclude the common embed stub (if present) and any file names known to create duplicate symbols.
-  list(FILTER XCLIPSE_SRCS EXCLUDE REGEX ".*shaders_embed_stub.*")
-  list(FILTER XCLIPSE_SRCS EXCLUDE REGEX ".*shaders_embed.*")
-  list(FILTER XCLIPSE_SRCS EXCLUDE REGEX ".*xeno_log_stream.*")
-  list(FILTER XCLIPSE_SRCS EXCLUDE REGEX ".*xeno_wrapper_stubs.*")
+  # Allow driver to include generated shader embed C files
+  # Also ensure the driver includes any stub file patterns if present.
+  # (We avoid including the top-level src/shaders_embed_stub.c in exe; plugin may include its own embed.)
 endif()
 
 if(XCLIPSE_SRCS)
   add_library(xclipse_driver SHARED ${XCLIPSE_SRCS})
   target_include_directories(xclipse_driver PRIVATE "${INCLUDE_DIR}" "${DRIVERS_XCLIPSE_DIR}")
+
+  # Add generated shader embed C arrays into the driver, not the exe, to avoid duplicates.
+  if(GENERATED_SHADER_C_FILES)
+    target_sources(xclipse_driver PRIVATE ${GENERATED_SHADER_C_FILES})
+  endif()
+
   set_target_properties(xclipse_driver PROPERTIES OUTPUT_NAME "xclipse")
   if(NOT MSVC)
     target_compile_options(xclipse_driver PRIVATE -fPIC -fvisibility=hidden)
-    # hide all symbols by default; exported API should be marked explicitly in driver headers if needed
     if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.13")
       set_target_properties(xclipse_driver PROPERTIES C_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
     endif()
@@ -209,9 +229,6 @@ if(XCLIPSE_SRCS)
 endif()
 
 # ---------------------- Build main executable -----------------------------
-# Add generated shader C arrays to the binary so SPV symbols resolve
-list(APPEND PROJECT_SRCS ${GENERATED_SHADER_C_FILES})
-
 add_executable(exynostools ${PROJECT_SRCS})
 add_dependencies(exynostools exy_generate_shaders)
 target_include_directories(exynostools PRIVATE "${INCLUDE_DIR}" "${GENERATED_SHADER_DIR}")
@@ -219,11 +236,6 @@ target_include_directories(exynostools PRIVATE "${INCLUDE_DIR}" "${GENERATED_SHA
 # IMPORTANT: do NOT link the shared driver into the executable to avoid duplicates.
 # The driver is a plugin (.so) installed separately. If you need to load it at runtime,
 # use dlopen() on the installed .so instead of linking against it.
-# (This avoids multiple-definition errors when both the exe and plugin contain same symbols.)
-#
-# if(TARGET xclipse_driver)
-#   target_link_libraries(exynostools PRIVATE xclipse_driver) <-- intentionally removed
-# endif()
 
 # ---------------------- Compiler / linker flags -------------------------
 if(ENABLE_LTO AND NOT DEFINED ANDROID_NDK_HOME)
@@ -269,6 +281,7 @@ install(TARGETS exynostools RUNTIME DESTINATION usr/bin)
 
 if(TARGET xclipse_driver)
   install(TARGETS xclipse_driver LIBRARY DESTINATION usr/lib)
+  # also install driver runtime tree for Winlator-style layout
   install(DIRECTORY ${DRIVERS_XCLIPSE_DIR}/ DESTINATION usr/share/exynostools/drivers/xclipse FILES_MATCHING PATTERN "*.*")
 endif()
 
