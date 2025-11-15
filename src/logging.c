@@ -1,9 +1,4 @@
 // src/logging.c
-/* Provide a single non-inline implementation of the logging API.
-   This translation unit defines XENO_LOG_IMPLEMENTATION_PRESENT so that
-   include/xeno_log.h exports non-static prototypes without conflicting
-   with static inline fallbacks. */
-
 #define XENO_LOG_IMPLEMENTATION_PRESENT
 #include "xeno_log.h"
 
@@ -13,23 +8,19 @@
 
 static void xeno_log_vprint_impl(const char *tag, const char *fmt, va_list va)
 {
-    /* Timestamp + tag + message to stderr */
     time_t t = time(NULL);
     struct tm tm;
-#if defined(_WIN32)
+#if defined(_MSC_VER)
     localtime_s(&tm, &t);
 #else
     localtime_r(&t, &tm);
 #endif
-    char buf[32];
-    if (strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm) == 0) {
-        buf[0] = '\0';
-    }
-    if (tag && tag[0] != '\0') {
-        fprintf(stderr, "%s [%s] ", buf, tag);
-    } else {
-        fprintf(stderr, "%s ", buf);
-    }
+    char ts[32] = {0};
+    if (strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm) == 0) ts[0] = '\0';
+
+    if (tag && tag[0]) fprintf(stderr, "%s [%s] ", ts, tag);
+    else fprintf(stderr, "%s ", ts);
+
     if (fmt) vfprintf(stderr, fmt, va);
     fprintf(stderr, "\n");
     fflush(stderr);
