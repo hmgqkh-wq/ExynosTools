@@ -33,6 +33,8 @@ jobs:
 
         cp build-android/exynostools xafan/exynostools-android-arm64/usr/bin/
         cp build-android/exynostools_selfcheck xafan/exynostools-android-arm64/usr/bin/
+
+        # Copy compiled SPIR-V for inspection/use
         find build-android/shaders -type f -name "*.spv" -exec cp {} xafan/exynostools-android-arm64/assets/shaders/decode/ \;
 
     - name: Create compressed artifact
