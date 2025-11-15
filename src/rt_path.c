@@ -1,5 +1,4 @@
 // src/rt_path.c
-// Full drop-in replacement — includes <string.h> to fix implicit memcpy declaration
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -8,7 +7,7 @@
 #include "rt_path.h"
 #include "xeno_log.h"
 
-/* Query device address for a buffer (requires VK_KHR_buffer_device_address or core Vulkan 1.2) */
+/* Query device address for a buffer */
 VkDeviceAddress get_buffer_device_address(VkDevice device, VkBuffer buffer)
 {
     if (device == VK_NULL_HANDLE || buffer == VK_NULL_HANDLE) return (VkDeviceAddress)0;
