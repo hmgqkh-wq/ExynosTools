@@ -1,44 +1,45 @@
 #version 450
-#extension GL_GOOGLE_include_directive : enable
-#include "bc_common.glsl"
+// BC5 dual-channel (two BC4 streams) simplified implementation
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
-// BC5: two BC4 blocks for R and G. 4 uints per block: epR, idxR, epG, idxG.
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer Src { uint data[]; } srcBuf;
+layout(binding = 1, rg8) writeonly uniform image2D dstImg;
 
-layout(set = 0, binding = 0) readonly buffer InputBuffer { uint data[]; } inputBuffer;
-layout(set = 0, binding = 1, rg32f) uniform image2D outputImage;
+layout(push_constant) uniform Push { uint srcOffset; uint srcSize; uint width; uint height; } pc;
 
-void main()
-{
-    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 base = b * 4;
-    ivec2 dim = imageSize(outputImage);
-    if (base.x >= dim.x || base.y >= dim.y) return;
+float decode_channel(uint64_t block, uint idx) {
+    uint index = (block >> (idx * 3u)) & 0x7u;
+    return float(index) / 7.0;
+}
 
-    int blocksX = (dim.x + 3) >> 2;
-    uint blockIndex = uint(b.y * blocksX + b.x);
-    uint d = blockIndex * 4u;
+void main() {
+    uint gx = gl_GlobalInvocationID.x;
+    uint gy = gl_GlobalInvocationID.y;
+    if (gx >= pc.width || gy >= pc.height) return;
 
-    uint epR  = inputBuffer.data[d + 0u];
-    uint idxR = inputBuffer.data[d + 1u];
-    uint epG  = inputBuffer.data[d + 2u];
-    uint idxG = inputBuffer.data[d + 3u];
+    uint block_x = gx / 4u;
+    uint block_y = gy / 4u;
+    uint blocks_per_row = (pc.width + 3u) / 4u;
+    uint block_index = block_y * blocks_per_row + block_x;
 
-    float r0 = norm8(epR & 0xFFu);
-    float r1 = norm8((epR >> 8) & 0xFFu);
-    float g0 = norm8(epG & 0xFFu);
-    float g1 = norm8((epG >> 8) & 0xFFu);
+    // BC5 stores two BC4 blocks sequentially (16 bytes)
+    uint byte_offset = pc.srcOffset + block_index * 16u;
+    uint word_index = byte_offset / 4u;
 
-    float R[8]; float G[8];
-    alpha8(r0, r1, R);
-    alpha8(g0, g1, G);
+    uint w0 = srcBuf.data[word_index];
+    uint w1 = srcBuf.data[word_index + 1u];
+    uint w2 = srcBuf.data[word_index + 2u];
+    uint w3 = srcBuf.data[word_index + 3u];
 
-    for (uint t=0u; t<16u; ++t) {
-        uint ri = idx3(idxR, t);
-        uint gi = idx3(idxG, t);
-        vec2 rg = vec2(R[ri], G[gi]);
+    uint64_t ch0 = (uint64_t(w1) << 32) | uint64_t(w0);
+    uint64_t ch1 = (uint64_t(w3) << 32) | uint64_t(w2);
 
-        ivec2 p = base + ivec2(int(t % 4u), int(t / 4u));
-        if (p.x < dim.x && p.y < dim.y) imageStore(outputImage, p, vec4(rg,0.0,0.0));
-    }
+    uint px = gx & 3u;
+    uint py = gy & 3u;
+    uint pixel_index = py * 4u + px;
+
+    float v0 = decode_channel(ch0, pixel_index);
+    float v1 = decode_channel(ch1, pixel_index);
+
+    imageStore(dstImg, ivec2(gx, gy), vec4(v0, v1, 0.0, 1.0));
 }
