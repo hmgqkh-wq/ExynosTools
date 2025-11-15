@@ -16,16 +16,14 @@ set(SHADERS_SRC_DIR "${CMAKE_SOURCE_DIR}/assets/shaders/src")
 set(GENERATED_SHADER_DIR "${CMAKE_BINARY_DIR}/generated_shaders")
 file(MAKE_DIRECTORY "${GENERATED_SHADER_DIR}")
 
-# Make generated shader dir readable by compiler includes
 include_directories("${INCLUDE_DIR}" "${GENERATED_SHADER_DIR}")
 
 # ------------------------ Find required tools ---------------------------
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_program(GLSLC_EXEC glslc)
 find_program(XXD_EXEC xxd)
-find_program(BASH_EXEC bash) # used only if needed by repository normalizer (not required for this file)
+find_program(BASH_EXEC bash)
 
-# Validate presence of required tools when BUILD_SHADERS is ON
 if(BUILD_SHADERS)
   if(NOT XXD_EXEC)
     message(FATAL_ERROR "Required tool 'xxd' not found. Install (e.g. vim-common) or set -DBUILD_SHADERS=OFF and provide prebuilt .spv files.")
@@ -36,12 +34,10 @@ if(BUILD_SHADERS)
 endif()
 
 # ------------------------ Optional repo normalizer ----------------------
-# If your repo contains normalize_and_validate_shaders.sh, run it to normalize shaders.
-# We call it via bash if present (but it's optional).
 set(REPO_NORMALIZER "${CMAKE_SOURCE_DIR}/normalize_and_validate_shaders.sh")
 if(BUILD_SHADERS AND EXISTS "${REPO_NORMALIZER}")
   if(NOT BASH_EXEC)
-    message(WARNING "normalize_and_validate_shaders.sh found but 'bash' is missing on host; skipping it.")
+    message(WARNING "normalize_and_validate_shaders.sh found but 'bash' is missing; skipping it.")
     add_custom_target(exy_repo_normalize_shaders)
   else()
     if(NOT TARGET exy_repo_normalize_shaders)
@@ -58,15 +54,10 @@ else()
   add_custom_target(exy_repo_normalize_shaders)
 endif()
 
-# ------------------------ Prepare shader files with pure CMake ----------
-# We will:
-# - copy each shader into GENERATED_SHADER_DIR
-# - ensure '#version' is present at top by inserting '#version 450' if missing
-# - detect whether the file contains an entrypoint 'main' (pure CMake regex)
-# - compile only files with an entrypoint; treat others as includes/headers (do not compile)
-#
-# Note: no external helper files are created — all logic is pure CMake and add_custom_command invocations.
-
+# ------------------------ Prepare shader files (pure CMake) -------------
+# This section copies shader files to GENERATED_SHADER_DIR, ensures a default
+# '#version 450' is present if not found, normalizes newlines, detects whether
+# 'main' exists and then either compiles the shader or treats it as an include/header.
 set(GENERATED_SHADER_C_FILES)
 
 if(EXISTS "${SHADERS_SRC_DIR}")
@@ -79,43 +70,33 @@ if(EXISTS "${SHADERS_SRC_DIR}")
   )
 
   foreach(_infile IN LISTS _ALL_SHADER_FILES)
-    # Normalized name and extension
-    get_filename_component(_base ${_infile} NAME_WE)    # base filename (no ext)
-    get_filename_component(_ext  ${_infile} EXT)       # extension (with dot)
-    string(TOLOWER "${_ext}" _ext_l)                    # lowercase extension
+    get_filename_component(_base ${_infile} NAME_WE)
+    get_filename_component(_ext  ${_infile} EXT)
+    string(TOLOWER "${_ext}" _ext_l)
 
-    # Destination/sanitized file path in generated dir
     set(_sanitized "${GENERATED_SHADER_DIR}/${_base}${_ext_l}")
     set(_out_spv    "${GENERATED_SHADER_DIR}/${_base}.spv")
     set(_out_c      "${GENERATED_SHADER_DIR}/${_base}_spv.c")
 
-    # 1) Read original file contents and produce sanitized content into GENERATED_SHADER_DIR
+    # Read original file into variable and normalize CRLF -> LF
     file(READ "${_infile}" _content_raw)
+    string(REPLACE "\r\n" "\n" _content "${_content_raw}")
+    string(REPLACE "\r" "\n" _content "${_content}")
 
-    # Remove leading UTF-8 BOM if present (handles stray BOM causing #version not at first char)
-    string(REGEX REPLACE "^\xEF\xBB\xBF" "" _content "${_content_raw}")
-
-    # Check for '#version' as first non-whitespace token
+    # NOTE: we do NOT attempt to match/strip a UTF-8 BOM via \x escapes here
+    # because CMake's regex parser does not accept \x escapes. If your shader
+    # files contain a BOM, either remove it locally or use the repo normalizer.
+    #
+    # Determine whether a '#version' directive is present as the first non-space token
     string(REGEX MATCH "^[[:space:]]*#version" _has_version "${_content}")
-
     if(_has_version)
-      # Write the content as-is to sanitized location
       file(WRITE "${_sanitized}" "${_content}")
     else()
-      # Prepend '#version 450' to sanitized copy (safe default for Vulkan shaders)
-      # If your shaders require a different version, pass -DSHADER_TARGET_ENV or edit files directly.
+      # Prepend safe default '#version 450' for Vulkan shaders
       file(WRITE "${_sanitized}" "#version 450\n${_content}")
     endif()
 
-    # Ensure unix newlines: simple replace CRLF -> LF
-    string(REGEX REPLACE "\r\n" "\n" _sanitized_fixed "$<FILE:${_sanitized}>" OUTPUT) # NOTE: placeholder to avoid misread; we'll do a robust rewrite below
-    # Because the above FILE: expansion isn't available in all contexts, do a safe rewrite using file(READ)/WRITE:
-    file(READ "${_sanitized}" _tmpdata)
-    string(REPLACE "\r\n" "\n" _tmpdata "${_tmpdata}")
-    string(REPLACE "\r" "\n" _tmpdata "${_tmpdata}")
-    file(WRITE "${_sanitized}" "${_tmpdata}")
-
-    # 2) Determine shader stage for compilation (comp/frag/vert). Default to 'comp' for generic .glsl
+    # Decide shader stage
     if(_ext_l STREQUAL ".comp")
       set(_stage "comp")
     elseif(_ext_l STREQUAL ".frag")
@@ -126,17 +107,15 @@ if(EXISTS "${SHADERS_SRC_DIR}")
       set(_stage "comp")
     endif()
 
-    # 3) Detect whether the sanitized file contains an entrypoint (main)
-    # Using CMake regex: look for 'void <spaces> main(' or 'main('
-    string(REGEX MATCH "void[[:space:]]+main[[:space:]]*\\(" _has_main "${_tmpdata}")
+    # Detect whether sanitized file contains an entrypoint (simple regex)
+    string(REGEX MATCH "void[[:space:]]+main[[:space:]]*\\(" _has_main "${_content}")
     if(NOT _has_main)
-      string(REGEX MATCH "main[[:space:]]*\\(" _has_main "${_tmpdata}")
+      string(REGEX MATCH "main[[:space:]]*\\(" _has_main "${_content}")
     endif()
 
-    # 4) Create compile-or-skip custom command (pure add_custom_command with direct executable)
+    # Create compile-or-skip custom commands
     if(BUILD_SHADERS)
       if(_has_main)
-        # If glslangValidator available
         if(GLSLANG_VALIDATOR)
           add_custom_command(
             OUTPUT "${_out_spv}"
@@ -156,13 +135,12 @@ if(EXISTS "${SHADERS_SRC_DIR}")
             VERBATIM
           )
         else()
-          message(FATAL_ERROR "No shader compiler available at configure time.")
+          message(FATAL_ERROR "No shader compiler available.")
         endif()
       else()
-        # No entrypoint found -> create an empty (zero-length) .spv so embed step doesn't fail.
         add_custom_command(
           OUTPUT "${_out_spv}"
-          COMMAND ${CMAKE_COMMAND} -E echo "No entrypoint in ${_sanitized}: treating as include/header (touching ${_out_spv})"
+          COMMAND ${CMAKE_COMMAND} -E echo "No entrypoint in ${_sanitized}: treat as include/header and touch ${_out_spv}"
           COMMAND ${CMAKE_COMMAND} -E touch "${_out_spv}"
           DEPENDS "${_sanitized}"
           COMMENT "Skipping compile for include ${_sanitized}"
@@ -170,7 +148,6 @@ if(EXISTS "${SHADERS_SRC_DIR}")
         )
       endif()
     else()
-      # BUILD_SHADERS OFF: If original file is .spv copy it, else touch placeholder
       if(_ext_l STREQUAL ".spv")
         add_custom_command(
           OUTPUT "${_out_spv}"
@@ -184,16 +161,15 @@ if(EXISTS "${SHADERS_SRC_DIR}")
           OUTPUT "${_out_spv}"
           COMMAND ${CMAKE_COMMAND} -E touch "${_out_spv}"
           DEPENDS "${_sanitized}"
-          COMMENT "Placeholder SPV (build shaders disabled): ${_sanitized}"
+          COMMENT "Placeholder SPV (build disabled): ${_sanitized}"
           VERBATIM
         )
       endif()
     endif()
 
-    # 5) Embed the SPIR-V into a C source using xxd -i (xxd supports 'xxd -i infile outfile')
+    # Embed SPIR-V into C using xxd -i
     add_custom_command(
       OUTPUT "${_out_c}"
-      # If spv has content xxd -i produces C array in output file; if spv zero-length xxd will still create a file but it may be empty -> handle gracefully.
       COMMAND ${CMAKE_COMMAND} -E echo "Embedding SPIR-V ${_out_spv} -> ${_out_c}"
       COMMAND ${XXD_EXEC} -i "${_out_spv}" "${_out_c}"
       DEPENDS "${_out_spv}"
@@ -205,7 +181,7 @@ if(EXISTS "${SHADERS_SRC_DIR}")
   endforeach()
 endif()
 
-# Create an aggregate target for generated shader C sources
+# Aggregate target
 if(GENERATED_SHADER_C_FILES)
   add_custom_target(exy_generate_shaders DEPENDS ${GENERATED_SHADER_C_FILES})
   add_dependencies(exy_generate_shaders exy_repo_normalize_shaders)
@@ -213,17 +189,15 @@ else()
   add_custom_target(exy_generate_shaders)
 endif()
 
-# ------------------------ Project sources & final target -----------------
+# ------------------------ Project build --------------------------------
 file(GLOB_RECURSE PROJECT_SRCS "${SRC_DIR}/*.c")
-# Append generated shader C sources so they compile and link (resolve <name>_spv symbols)
 list(APPEND PROJECT_SRCS ${GENERATED_SHADER_C_FILES})
 
 add_executable(exynostools ${PROJECT_SRCS})
 add_dependencies(exynostools exy_generate_shaders)
-
 target_include_directories(exynostools PRIVATE "${INCLUDE_DIR}" "${GENERATED_SHADER_DIR}")
 
-# ------------------------ Compiler/linker flags -------------------------
+# ------------------------ Optimizations & link --------------------------
 if(ENABLE_LTO AND NOT DEFINED ANDROID_NDK_HOME)
   include(CheckIPOSupported)
   check_ipo_supported(RESULT ipo_supported OUTPUT ipo_out)
@@ -235,12 +209,10 @@ endif()
 if(NOT CMAKE_TOOLCHAIN_FILE)
   target_compile_options(exynostools PRIVATE -O3)
 endif()
-
 if(NOT MSVC)
   target_compile_options(exynostools PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# ------------------------ Find Vulkan & link libs -----------------------
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
   target_include_directories(exynostools PRIVATE ${Vulkan_INCLUDE_DIRS})
