@@ -68,7 +68,8 @@ if(EXISTS "${SHADERS_SRC_DIR}")
 
     # Guard: skip regex if empty to avoid CMake errors
     if(NOT _content STREQUAL "")
-      string(REGEX REPLACE "^[ \t\n\r]*" "" _content "${_content}")
+      # Use '+' so the regex cannot match an empty string (CMake rejects empty-match REPLACE regex)
+      string(REGEX REPLACE "^[ \t\n\r]+" "" _content "${_content}")
     endif()
 
     # Ensure a clean '#version 450' as the first line
