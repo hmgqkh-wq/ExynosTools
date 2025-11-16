@@ -1,22 +1,74 @@
 {
-  "vendor": "Qualcomm",
-  "driver": "Adreno-Compat-Wrapper",
-  "version": "1.1.0.0",
-  "gpu": "Xclipse-940 (wrapped as Adreno)",
-  "vendor_id": 0x5143,
-  "supported_api": [
-    "Vulkan1.3",
-    "VK_KHR_swapchain",
-    "VK_EXT_descriptor_indexing",
-    "VK_EXT_subgroup_size_control",
-    "VK_KHR_ray_tracing_pipeline",
-    "VK_KHR_acceleration_structure",
-    "VK_KHR_pipeline_library",
-    "VK_KHR_deferred_host_operations",
-    "VK_KHR_shader_clock",
-    "VK_KHR_ray_query",
-    "VK_EXT_shader_async_compile",
-    "VK_EXT_mesh_shader"
-  ],
-  "notes": "Compatibility wrapper that proxies to stock Xclipse driver and applies conservative limit promotions, async compile, and ray tracing support."
+  "name": "xclipse-940",
+  "driver": "libvulkan_xeno.so",
+  "entrypoint": "xeno_init",
+  "target": "vulkan1.4",
+  "features": {
+    "spirv_embedded": true,
+    "pipeline_cache": true,
+    "async_compile": true,
+    "auto_tuning": true,
+    "hud_overlay": true,
+    "ray_tracing": true,
+    "mesh_shading": true,
+    "variable_rate_shading": true,
+    "bc_texture_formats": [
+      "BC1",
+      "BC2",
+      "BC3",
+      "BC4",
+      "BC5",
+      "BC6H",
+      "BC7"
+    ],
+    "descriptor_indexing": true,
+    "buffer_device_address": true,
+    "timeline_semaphores": true,
+    "dynamic_rendering": true,
+    "robust_buffer_access": true,
+    "pipeline_library": true,
+    "shader_object": true,
+    "maintenance5_plus": true,
+    "subgroup_operations": true,
+    "pipeline_executable_properties": true,
+    "shader_demote_to_helper": true,
+    "shader_atomic_int64": true,
+    "shader_float16_int8": true,
+    "workgraph_support": false,
+    "opengl_es_3_2": true,
+    "opencl_compute": true,
+    "directx12_layer": true
+  },
+  "assets": {
+    "shaders": "usr/share/exynostools/shaders",
+    "profiles": "etc/exynostools/profiles",
+    "pipeline_cache": "usr/share/exynostools/shaders/pipeline_cache"
+  },
+  "vulkan_extensions": {
+    "core": [
+      "VK_VERSION_1_4"
+    ],
+    "device": [
+      "VK_KHR_acceleration_structure",
+      "VK_KHR_ray_tracing_pipeline",
+      "VK_KHR_deferred_host_operations",
+      "VK_KHR_buffer_device_address",
+      "VK_EXT_descriptor_indexing",
+      "VK_KHR_timeline_semaphore",
+      "VK_KHR_dynamic_rendering",
+      "VK_EXT_mesh_shader",
+      "VK_KHR_maintenance5",
+      "VK_KHR_shader_float16_int8",
+      "VK_KHR_shader_subgroup_extended_types",
+      "VK_EXT_shader_demote_to_helper_invocation",
+      "VK_KHR_pipeline_library",
+      "VK_KHR_pipeline_executable_properties",
+      "VK_EXT_vertex_input_dynamic_state",
+      "VK_EXT_extended_dynamic_state3",
+      "VK_EXT_shader_object",
+      "VK_EXT_shader_atomic_float",
+      "VK_KHR_synchronization2",
+      "VK_EXT_memory_budget"
+    ]
+  }
 }
